@@ -137,6 +137,37 @@ export default function HistoryPage() {
     setUnlockedThisSession(false);
   };
 
+  // NOTE: these hooks must run unconditionally (before the locked-screen
+  // early return) — otherwise React throws "rendered fewer hooks than expected".
+  const entityTypes = useMemo(() => {
+    const set = new Set<string>();
+    history.forEach((h) => set.add(h.entityType));
+    return Array.from(set).sort();
+  }, [history]);
+
+  const filtered = useMemo(() => {
+    return history.filter((h) => {
+      if (actionFilter !== "all" && h.action !== actionFilter) return false;
+      if (entityFilter !== "all" && h.entityType !== entityFilter) return false;
+      const q = search.toLowerCase().trim();
+      if (!q) return true;
+      return (
+        h.entityName.toLowerCase().includes(q) ||
+        h.entityType.toLowerCase().includes(q) ||
+        h.summary.toLowerCase().includes(q)
+      );
+    });
+  }, [history, search, actionFilter, entityFilter]);
+
+  const counts = useMemo(() => {
+    return {
+      total: history.length,
+      created: history.filter((h) => h.action === "Created").length,
+      edited: history.filter((h) => h.action === "Edited").length,
+      deleted: history.filter((h) => h.action === "Deleted").length,
+    };
+  }, [history]);
+
   if (!unlocked) {
     return (
       <div className="flex min-h-[70vh] items-center justify-center px-4">
@@ -182,35 +213,6 @@ export default function HistoryPage() {
       </div>
     );
   }
-
-  const entityTypes = useMemo(() => {
-    const set = new Set<string>();
-    history.forEach((h) => set.add(h.entityType));
-    return Array.from(set).sort();
-  }, [history]);
-
-  const filtered = useMemo(() => {
-    return history.filter((h) => {
-      if (actionFilter !== "all" && h.action !== actionFilter) return false;
-      if (entityFilter !== "all" && h.entityType !== entityFilter) return false;
-      const q = search.toLowerCase().trim();
-      if (!q) return true;
-      return (
-        h.entityName.toLowerCase().includes(q) ||
-        h.entityType.toLowerCase().includes(q) ||
-        h.summary.toLowerCase().includes(q)
-      );
-    });
-  }, [history, search, actionFilter, entityFilter]);
-
-  const counts = useMemo(() => {
-    return {
-      total: history.length,
-      created: history.filter((h) => h.action === "Created").length,
-      edited: history.filter((h) => h.action === "Edited").length,
-      deleted: history.filter((h) => h.action === "Deleted").length,
-    };
-  }, [history]);
 
   const summaryCards = [
     { label: "Total Events", value: counts.total, color: "text-slate-700", bg: "bg-slate-50" },

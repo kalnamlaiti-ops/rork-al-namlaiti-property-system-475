@@ -64,11 +64,32 @@ function toWsUrl(httpUrl: string): string {
   return httpUrl.replace(/^http/i, "ws");
 }
 
+/** Build an absolute HTTP URL against the backend origin. */
+export function backendHttpUrl(path: string): string {
+  return `${BACKEND_URL}${path}`;
+}
+
+/**
+ * Resolve a stored fileUrl for direct use (window.open, link href).
+ * Server-stored document URLs are relative ("/documents/{id}") and must be
+ * prefixed with the backend origin; legacy data:/http URLs pass through.
+ */
+export function resolveFileUrl(url: string | undefined): string | undefined {
+  if (!url) return url;
+  if (url.startsWith("/")) return `${BACKEND_URL}${url}`;
+  return url;
+}
+
 function newMutationId(): string {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
     return crypto.randomUUID();
   }
   return `m-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+/** Generate a mutation id for HTTP uploads (shares the idempotency ledger with WS mutations). */
+export function newHttpMutationId(): string {
+  return newMutationId();
 }
 
 /** Generate a short random guest label, persisted in localStorage. */

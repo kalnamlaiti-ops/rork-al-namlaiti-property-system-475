@@ -32,6 +32,8 @@ import type {
 import {
   syncClient,
   getActorLabel,
+  backendHttpUrl,
+  newHttpMutationId,
   type ConnectionStatus,
   type MutateOp,
   type SaveInfo,
@@ -359,6 +361,107 @@ export const [DataProvider, useData] = createContextHook(() => {
       syncClient.sendMutate({ kind: "delete", collection, id, snapshot }, actorRef.current);
     },
     [updateArray],
+  );
+
+  // ── Document blob uploads (HTTP) ──
+  // Document binaries (a lease-agreement PDF is ~2 MB with the embedded
+  // template image) exceed Cloudflare's 1 MiB WebSocket message limit —
+  // sending them over the WS closes the socket and fails every queued
+  // mutation behind it ("Save failed"). Binaries now go over HTTP to a
+  // dedicated blob store; only lightweight records use the shared store.
+  const [docUploadState, setDocUploadState] = useState<{ uploading: number; failed: number; lastError: string | null }>({
+    uploading: 0,
+    failed: 0,
+    lastError: null,
+  });
+  const failedUploadsRef = useRef(new Map<string, { doc: Document; dataUri: string }>());
+  const uploadingCountRef = useRef(0);
+
+  const syncDocUploadState = useCallback(() => {
+    setDocUploadState({
+      uploading: uploadingCountRef.current,
+      failed: failedUploadsRef.current.size,
+      lastError: failedUploadsRef.current.size > 0 ? "Some documents could not be saved." : null,
+    });
+  }, []);
+
+  /** Upload one document binary over HTTP; retries 3× with backoff. */
+  const performDocUpload = useCallback(
+    async (doc: Document, dataUri: string, attempt = 0): Promise<void> => {
+      try {
+        const res = await fetch(backendHttpUrl("/documents/upload"), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            mutationId: newHttpMutationId(),
+            record: { ...doc, fileUrl: undefined },
+            dataUri,
+          }),
+        });
+        if (!res.ok) {
+          const body = (await res.json().catch(() => ({}))) as { error?: string };
+          throw new Error(body.error ?? `HTTP ${res.status}`);
+        }
+        failedUploadsRef.current.delete(doc.id);
+        syncDocUploadState();
+      } catch {
+        if (attempt < 3) {
+          await new Promise((resolve) => setTimeout(resolve, 1500 * 2 ** attempt));
+          await performDocUpload(doc, dataUri, attempt + 1);
+          return;
+        }
+        failedUploadsRef.current.set(doc.id, { doc, dataUri });
+        syncDocUploadState();
+        toast.error("Could not save the document. Please check your connection and try again.");
+      }
+    },
+    [syncDocUploadState],
+  );
+
+  const retryFailedUploads = useCallback((): number => {
+    const entries = [...failedUploadsRef.current.values()];
+    failedUploadsRef.current.clear();
+    syncDocUploadState();
+    for (const entry of entries) {
+      uploadingCountRef.current += 1;
+      void performDocUpload(entry.doc, entry.dataUri, 0).then(() => {
+        uploadingCountRef.current = Math.max(0, uploadingCountRef.current - 1);
+        syncDocUploadState();
+      });
+    }
+    return entries.length;
+  }, [performDocUpload, syncDocUploadState]);
+
+  /**
+   * Persist a document: data-URI payloads go over HTTP (blob store) while
+   * plain URL/link records go through the normal WebSocket mutation path.
+   */
+  const saveDocumentRecord = useCallback(
+    (doc: Document) => {
+      const fileUrl = typeof doc.fileUrl === "string" ? doc.fileUrl : "";
+      if (fileUrl.startsWith("data:")) {
+        // Optimistic local upsert so the UI shows the document immediately;
+        // the server broadcast (with the canonical short fileUrl) replaces it.
+        updateArray("documents", (arr) => {
+          const idx = arr.findIndex((d) => d.id === doc.id);
+          if (idx >= 0) {
+            const next = arr.slice();
+            next[idx] = doc;
+            return next;
+          }
+          return [...arr, doc];
+        });
+        uploadingCountRef.current += 1;
+        syncDocUploadState();
+        void performDocUpload(doc, fileUrl, 0).then(() => {
+          uploadingCountRef.current = Math.max(0, uploadingCountRef.current - 1);
+          syncDocUploadState();
+        });
+        return;
+      }
+      sendAdd("documents", doc);
+    },
+    [updateArray, sendAdd, performDocUpload, syncDocUploadState],
   );
 
   // Seed default lease template field positions once when the shared workspace is empty.
@@ -737,7 +840,7 @@ export const [DataProvider, useData] = createContextHook(() => {
           uploadDate: agreement.generatedAt,
           fileUrl,
         };
-        sendAdd("documents", docRecord);
+        saveDocumentRecord(docRecord);
 
         sendUpdate("leaseAgreements", agreementId, {
           status: "Generated",
@@ -754,7 +857,7 @@ export const [DataProvider, useData] = createContextHook(() => {
         toast.error(`Lease agreement generation failed: ${message}`);
       }
     },
-    [buildLeaseAgreementContext, data.leaseAgreements, sendAdd, sendUpdate, fieldConfigs],
+    [buildLeaseAgreementContext, data.leaseAgreements, sendAdd, sendUpdate, saveDocumentRecord, fieldConfigs],
   );
 
   const regenerateLeaseAgreement = useCallback(
@@ -1990,7 +2093,8 @@ export const [DataProvider, useData] = createContextHook(() => {
   const addDocument = useCallback(
     (document: Omit<Document, "id">) => {
       const newDocument: Document = { ...document, id: generateId("doc") };
-      sendAdd("documents", newDocument);
+      // data-URI payloads are routed to the HTTP blob store automatically.
+      saveDocumentRecord(newDocument);
       pushHistory({
         action: "Created",
         entityType: "Document",
@@ -2001,21 +2105,26 @@ export const [DataProvider, useData] = createContextHook(() => {
       toast.success(`Document "${newDocument.name}" uploaded`);
       return newDocument;
     },
-    [sendAdd, pushHistory],
+    [saveDocumentRecord, pushHistory],
   );
 
   const updateDocument = useCallback(
     (id: string, updates: Partial<Document>) => {
       let changes: { field: string; from: string; to: string }[] = [];
       let name = "Document";
-      setData((prev) => {
-        const existing = prev.documents.find((d) => d.id === id);
-        if (!existing) return prev;
+      const existing = data.documents.find((d) => d.id === id);
+      if (existing) {
         name = existing.name;
         changes = diffChanges(existing as unknown as Record<string, unknown>, updates as Record<string, unknown>);
-        return prev;
-      });
-      sendUpdate("documents", id, updates as unknown as Record<string, unknown>);
+      }
+      const newFileUrl = updates.fileUrl;
+      if (typeof newFileUrl === "string" && newFileUrl.startsWith("data:")) {
+        // Replacing the binary — upload over HTTP (server upserts record + blob).
+        const merged: Document = { ...(existing ?? ({ id } as Document)), ...updates };
+        saveDocumentRecord(merged);
+      } else {
+        sendUpdate("documents", id, updates as unknown as Record<string, unknown>);
+      }
       pushHistory({
         action: "Edited",
         entityType: "Document",
@@ -2026,7 +2135,7 @@ export const [DataProvider, useData] = createContextHook(() => {
       });
       toast.success("Document updated");
     },
-    [sendUpdate, pushHistory],
+    [data.documents, sendUpdate, saveDocumentRecord, pushHistory],
   );
 
   const deleteDocument = useCallback(
@@ -2769,6 +2878,8 @@ export const [DataProvider, useData] = createContextHook(() => {
     connectionStatus,
     saveInfo,
     retryFailedSaves,
+    docUploadState,
+    retryFailedUploads,
     actorLabel: actorRef.current,
     addOwner,
     updateOwner,

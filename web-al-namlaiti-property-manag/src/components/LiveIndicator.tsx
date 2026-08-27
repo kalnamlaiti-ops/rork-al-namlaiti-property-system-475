@@ -10,17 +10,22 @@ import { Radio, Loader2, WifiOff, CloudUpload, AlertCircle } from "lucide-react"
 import { cn } from "@/lib/utils";
 
 export function LiveIndicator() {
-  const { connectionStatus, saveInfo, retryFailedSaves } = useData();
-  const pending = saveInfo?.pending ?? 0;
-  const failed = saveInfo?.failed ?? 0;
+  const { connectionStatus, saveInfo, retryFailedSaves, docUploadState, retryFailedUploads } = useData();
+  const pending = (saveInfo?.pending ?? 0) + (docUploadState?.uploading ?? 0);
+  const failed = (saveInfo?.failed ?? 0) + (docUploadState?.failed ?? 0);
+
+  const retryAll = () => {
+    retryFailedSaves();
+    retryFailedUploads();
+  };
 
   // Save-failed takes precedence so it's never hidden by "connected".
   if (connectionStatus === "connected" && failed > 0) {
     return (
       <button
         type="button"
-        onClick={() => retryFailedSaves()}
-        title={saveInfo?.lastError ?? "Some changes could not be saved. Click to retry."}
+        onClick={retryAll}
+        title={saveInfo?.lastError ?? docUploadState?.lastError ?? "Some changes could not be saved. Click to retry."}
         className="inline-flex items-center gap-2 rounded-full border border-red-200 bg-red-50 px-3 py-1 text-xs font-medium text-red-700 transition-colors hover:bg-red-100"
       >
         <AlertCircle className="h-3.5 w-3.5" />

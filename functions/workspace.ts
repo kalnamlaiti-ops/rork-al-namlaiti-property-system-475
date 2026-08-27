@@ -176,14 +176,37 @@ export class Workspace extends DurableObject<Env> {
         ts TEXT NOT NULL
       )
     `);
+    // Document binaries (PDFs etc.) are stored OUTSIDE the JSON store so
+    // multi-megabyte base64 payloads never flow through WebSocket messages
+    // (Cloudflare limits WS messages to 1 MiB) and never bloat snapshots.
+    this.ctx.storage.sql.exec(`
+      CREATE TABLE IF NOT EXISTS document_blobs (
+        id    TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        ts    TEXT NOT NULL
+      )
+    `);
   }
 
   // ─────────────────────────── HTTP entry ───────────────────────────
 
   override async fetch(request: Request): Promise<Response> {
-    // ── HTTP endpoint for WhatsApp webhook status updates ──
-    // The Worker parses Meta's webhook payload and forwards status updates here.
+    const url = new URL(request.url);
+
+    // ── HTTP document endpoints ──
+    // Document binaries travel over HTTP (they can be megabytes — far above
+    // the 1 MiB WebSocket message limit). Only lightweight Document records
+    // live in the shared store / WebSocket broadcast.
     if (request.headers.get("Upgrade") !== "websocket") {
+      if (url.pathname === "/documents/upload" && request.method === "POST") {
+        return this.handleDocumentUpload(request);
+      }
+      const docMatch = url.pathname.match(/^\/documents\/([^/]+)$/);
+      if (request.method === "GET" && docMatch) {
+        return this.serveDocument(docMatch[1], url.searchParams.get("download") === "1");
+      }
+      // ── HTTP endpoint for WhatsApp webhook status updates ──
+      // The Worker parses Meta's webhook payload and forwards status updates here.
       if (request.method === "POST") {
         return this.handleWebhookStatus(request);
       }
@@ -207,6 +230,96 @@ export class Workspace extends DurableObject<Env> {
     });
 
     return new Response(null, { status: 101, webSocket: client });
+  }
+
+  // ─────────────────────────── Document blob endpoints ───────────────────────────
+
+  /**
+   * Store a document's binary (data URI) in the dedicated SQLite blob table
+   * and upsert the lightweight Document record into the shared store.
+   * Durable before responding; idempotent via mutationId; broadcasts the
+   * small record to all connected clients over WebSocket.
+   */
+  private async handleDocumentUpload(request: Request): Promise<Response> {
+    let body: { mutationId?: string; record?: { id?: string; [k: string]: unknown }; dataUri?: string };
+    try {
+      body = (await request.json()) as { mutationId?: string; record?: { id?: string; [k: string]: unknown }; dataUri?: string };
+    } catch {
+      return Response.json({ ok: false, error: "invalid json" }, { status: 400 });
+    }
+    const mutationId = body.mutationId ?? crypto.randomUUID();
+    const record = body.record;
+    const dataUri = body.dataUri;
+    const docId = String(record?.id ?? "");
+    if (!docId || !dataUri || typeof dataUri !== "string" || !dataUri.startsWith("data:")) {
+      logPersistError({ mutationId, operation: "documentUpload", collection: "documents", entityId: docId || "unknown", error: "missing id or dataUri" });
+      return Response.json({ ok: false, error: "missing document id or data" }, { status: 400 });
+    }
+    try {
+      await this.ensureHydrated();
+      // Idempotency: re-uploading the same mutation must not duplicate work.
+      if (this.isMutationProcessed(mutationId)) {
+        return Response.json({ ok: true, mutationId });
+      }
+      // 1. Blob goes to its own table.
+      this.ctx.storage.sql.exec(
+        "INSERT INTO document_blobs (id, value, ts) VALUES (?, ?, ?) ON CONFLICT(id) DO UPDATE SET value = excluded.value, ts = excluded.ts",
+        docId,
+        dataUri,
+        new Date().toISOString(),
+      );
+      // 2. Lightweight record into the shared store (fileUrl is relative;
+      // the client resolves it against the backend origin).
+      const store = this.store as DataStore;
+      const documents = store.documents as Array<Record<string, unknown>>;
+      const cleanRecord: Record<string, unknown> = { ...record, fileUrl: `/documents/${docId}` };
+      const idx = documents.findIndex((d) => d.id === docId);
+      if (idx >= 0) documents[idx] = cleanRecord;
+      else documents.push(cleanRecord);
+      // 3. Durable persistence of BOTH blob and store before acknowledging.
+      await this.persistNow();
+      await this.recordMutationProcessed(mutationId);
+      // 4. Broadcast the small record to every connected client.
+      this.broadcast({
+        type: "patch",
+        op: { kind: "add", collection: "documents", entity: cleanRecord },
+        actor: "document-upload",
+      });
+      return Response.json({ ok: true, mutationId });
+    } catch (err) {
+      logPersistError({
+        mutationId,
+        operation: "documentUpload",
+        collection: "documents",
+        entityId: docId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return Response.json({ ok: false, error: "could not save document" }, { status: 500 });
+    }
+  }
+
+  /** Serve a stored document blob as a binary response (inline or download). */
+  private serveDocument(docId: string, download: boolean): Response {
+    try {
+      const rows = this.ctx.storage.sql
+        .exec<{ value: string }>("SELECT value FROM document_blobs WHERE id = ?", docId)
+        .toArray();
+      if (rows.length === 0) return new Response("document not found", { status: 404 });
+      const dataUri = rows[0].value;
+      const match = dataUri.match(/^data:([^;,]+)?(;base64)?,(.*)$/s);
+      if (!match) return new Response("document data unreadable", { status: 500 });
+      const mime = match[1] ?? "application/octet-stream";
+      const isBase64 = Boolean(match[2]);
+      const payload = isBase64 ? atob(match[3]) : decodeURIComponent(match[3]);
+      const bytes = new Uint8Array(payload.length);
+      for (let i = 0; i < payload.length; i++) bytes[i] = payload.charCodeAt(i);
+      const headers: Record<string, string> = { "Content-Type": mime };
+      if (download) headers["Content-Disposition"] = `attachment; filename="document-${docId}"`;
+      return new Response(bytes, { headers });
+    } catch (err) {
+      console.error("[do] serve document failed", err);
+      return new Response("could not read document", { status: 500 });
+    }
   }
 
   // ─────────────────────────── Message handling ───────────────────────────
@@ -449,12 +562,44 @@ export class Workspace extends DurableObject<Env> {
         for (const k of COLLECTION_KEYS) {
           if (!Array.isArray((this.store as DataStore)[k])) (this.store as DataStore)[k] = [];
         }
+        await this.migrateInlineDocuments();
         return;
       } catch {
         // fall through to empty store
       }
     }
     this.store = { ...EMPTY_STORE };
+  }
+
+  /**
+   * One-time safety migration: older versions embedded the whole document
+   * (base64 data URI) inside the Document record in the JSON store, which
+   * bloated snapshots/persists to multiple megabytes and broke WebSocket
+   * messages (1 MiB limit). Move any inline payloads into the document_blobs
+   * table and rewrite fileUrl to the HTTP endpoint. Data is preserved
+   * verbatim — nothing is deleted.
+   */
+  private async migrateInlineDocuments(): Promise<void> {
+    const store = this.store as DataStore;
+    const documents = store.documents as Array<Record<string, unknown>>;
+    if (!Array.isArray(documents)) return;
+    let changed = false;
+    for (const doc of documents) {
+      const fileUrl = typeof doc.fileUrl === "string" ? doc.fileUrl : "";
+      if (fileUrl.startsWith("data:")) {
+        const docId = String(doc.id ?? "");
+        if (!docId) continue;
+        this.ctx.storage.sql.exec(
+          "INSERT INTO document_blobs (id, value, ts) VALUES (?, ?, ?) ON CONFLICT(id) DO UPDATE SET value = excluded.value, ts = excluded.ts",
+          docId,
+          fileUrl,
+          new Date().toISOString(),
+        );
+        doc.fileUrl = `/documents/${docId}`;
+        changed = true;
+      }
+    }
+    if (changed) await this.persistNow();
   }
 
   /**

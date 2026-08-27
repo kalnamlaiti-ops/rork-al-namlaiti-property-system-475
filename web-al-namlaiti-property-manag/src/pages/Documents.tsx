@@ -10,6 +10,7 @@ import DocumentForm from "@/components/forms/DocumentForm";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
 import { Search, FileText, Download, Eye, Pencil, Trash2 } from "lucide-react";
 import { format } from "date-fns";
+import { resolveFileUrl } from "@/lib/syncClient";
 import type { Document } from "@/types";
 
 export default function Documents() {
@@ -70,8 +71,9 @@ export default function Documents() {
   };
 
   const handleDownload = (d: Document) => {
-    if (d.fileUrl && d.fileUrl !== "#") {
-      window.open(d.fileUrl, "_blank");
+    const url = resolveFileUrl(d.fileUrl);
+    if (url && url !== "#") {
+      window.open(url, "_blank");
     }
   };
 

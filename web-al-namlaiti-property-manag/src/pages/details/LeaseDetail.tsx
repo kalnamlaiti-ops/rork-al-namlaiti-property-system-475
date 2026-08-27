@@ -8,6 +8,7 @@ import { useData } from "@/context/DataContext";
 import LeaseForm from "@/components/forms/LeaseForm";
 import { ArrowLeft, Pencil, FileText, Home, Calendar, User, Eye, Download, RefreshCw, AlertCircle } from "lucide-react";
 import { format } from "date-fns";
+import { resolveFileUrl } from "@/lib/syncClient";
 
 export default function LeaseDetail() {
   const { id } = useParams<{ id: string }>();
@@ -130,7 +131,10 @@ export default function LeaseDetail() {
                   variant="outline"
                   size="sm"
                   disabled={agreement.status !== "Generated" || !agreementDoc?.fileUrl}
-                  onClick={() => agreementDoc?.fileUrl && window.open(agreementDoc.fileUrl, "_blank")}
+                  onClick={() => {
+                    const url = resolveFileUrl(agreementDoc?.fileUrl);
+                    if (url) window.open(url, "_blank");
+                  }}
                 >
                   <Eye className="mr-2 h-4 w-4" /> View
                 </Button>
@@ -139,9 +143,10 @@ export default function LeaseDetail() {
                   size="sm"
                   disabled={agreement.status !== "Generated" || !agreementDoc?.fileUrl}
                   onClick={() => {
-                    if (agreementDoc?.fileUrl) {
+                    const url = resolveFileUrl(agreementDoc?.fileUrl);
+                    if (url) {
                       const link = document.createElement("a");
-                      link.href = agreementDoc.fileUrl;
+                      link.href = url;
                       link.download = `${lease.contractNumber}-Lease-Agreement.pdf`;
                       link.click();
                     }

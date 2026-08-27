@@ -3,6 +3,15 @@
 // Holds the canonical data store (all entities + history) in SQLite and
 // broadcasts every mutation to all connected clients over WebSocket.
 //
+// Persistence guarantees:
+// - Every mutation is written to SQLite and durably committed
+//   (`storage.sync()`) BEFORE the server broadcasts or acknowledges it.
+// - Every client mutation carries a unique `mutationId`; the server
+//   acknowledges the exact id and stores processed ids so retrying the same
+//   mutation can never create duplicate records (idempotency).
+// - Failures are logged (mutation id, collection, entity id, operation,
+//   error, timestamp) WITHOUT any sensitive entity payloads.
+//
 // Uses the classic event-listener WebSocket pattern (not hibernation) for
 // maximum reliability across hosting environments.
 
@@ -90,11 +99,13 @@ const EMPTY_STORE: DataStore = {
 };
 
 // Message shapes exchanged with the client.
+// `mutationId` is optional so older clients keep working, but the web client
+// always sends it; it is echoed back in the ack/nack.
 type ClientMessage =
   | { type: "subscribe" }
-  | { type: "mutate"; op: MutateOp; actor: string }
-  | { type: "recover"; historyId: string; actor: string }
-  | { type: "clearHistory"; actor: string };
+  | { type: "mutate"; op: MutateOp; actor: string; mutationId?: string }
+  | { type: "recover"; historyId: string; actor: string; mutationId?: string }
+  | { type: "clearHistory"; actor: string; mutationId?: string };
 
 type MutateOp =
   | { kind: "add"; collection: keyof DataStore; entity: Record<string, unknown> }
@@ -107,9 +118,40 @@ type ServerMessage =
   | { type: "patch"; op: MutateOp; actor: string }
   | { type: "recover"; historyId: string; restored: { collection: keyof DataStore; entity: Record<string, unknown> } }
   | { type: "clearHistory" }
+  | { type: "ack"; mutationId: string }
+  | { type: "nack"; mutationId: string; error: string }
   | { type: "error"; message: string };
 
 type Env = { DO: Fetcher };
+
+/** Extract the entity id from an op for logging (never logs the payload). */
+function entityIdOf(op: MutateOp): string {
+  if (op.kind === "add") return String((op.entity as { id?: unknown }).id ?? "unknown");
+  if (op.kind === "update" || op.kind === "delete") return op.id;
+  return "collection";
+}
+
+/** Structured, PII-free persistence error log. */
+function logPersistError(info: {
+  mutationId: string;
+  operation: string;
+  collection: string;
+  entityId: string;
+  error: string;
+}): void {
+  console.error(
+    JSON.stringify({
+      level: "error",
+      scope: "persist",
+      mutationId: info.mutationId,
+      operation: info.operation,
+      collection: info.collection,
+      entityId: info.entityId,
+      error: info.error,
+      timestamp: new Date().toISOString(),
+    }),
+  );
+}
 
 export class Workspace extends DurableObject<Env> {
   // In-memory cache of the full store; hydrated lazily on first access.
@@ -124,6 +166,14 @@ export class Workspace extends DurableObject<Env> {
       CREATE TABLE IF NOT EXISTS kv (
         key   TEXT PRIMARY KEY,
         value TEXT NOT NULL
+      )
+    `);
+    // Idempotency ledger: every processed mutation id is recorded so retries
+    // of the same mutation never apply twice (no duplicate records).
+    this.ctx.storage.sql.exec(`
+      CREATE TABLE IF NOT EXISTS processed_mutations (
+        id TEXT PRIMARY KEY,
+        ts TEXT NOT NULL
       )
     `);
   }
@@ -185,44 +235,111 @@ export class Workspace extends DurableObject<Env> {
           this.sendTo(ws, { type: "snapshot", store: this.store as DataStore });
           return;
 
-        case "mutate": {
-          const result = this.applyMutate(msg.op);
-          if (!result.ok) {
-            console.warn("[ws] mutate failed", result.error);
-            this.sendTo(ws, { type: "error", message: result.error });
-            return;
-          }
-          this.persist();
-          this.broadcast({ type: "patch", op: msg.op, actor: msg.actor });
+        case "mutate":
+          await this.handleMutate(ws, msg);
           return;
-        }
 
-        case "recover": {
-          const recovered = this.applyRecover(msg.historyId);
-          if (!recovered.ok) {
-            console.warn("[ws] recover failed", recovered.error);
-            this.sendTo(ws, { type: "error", message: recovered.error });
-            return;
-          }
-          this.persist();
-          this.broadcast({ type: "recover", historyId: msg.historyId, restored: recovered.value });
+        case "recover":
+          await this.handleRecover(ws, msg);
           return;
-        }
 
-        case "clearHistory": {
-          this.store = { ...(this.store as DataStore), history: [] };
-          this.persist();
-          this.broadcast({ type: "clearHistory" });
+        case "clearHistory":
+          await this.handleClearHistory(ws, msg);
           return;
-        }
 
         default:
           this.sendTo(ws, { type: "error", message: "unknown message type" });
       }
     } catch (err) {
-      console.error("[ws] handler threw", err);
-      this.sendTo(ws, { type: "error", message: "internal error" });
+      const mutationId = (msg as { mutationId?: string }).mutationId ?? "unknown";
+      logPersistError({
+        mutationId,
+        operation: msg.type,
+        collection: "-",
+        entityId: "-",
+        error: err instanceof Error ? err.message : String(err),
+      });
+      this.sendTo(ws, {
+        type: "nack",
+        mutationId,
+        error: "internal error while saving",
+      });
     }
+  }
+
+  /**
+   * Apply a mutation durably, then broadcast + acknowledge.
+   * Order matters: SQLite write → storage.sync() → broadcast → ack.
+   * The client only treats data as saved after the matching ack.
+   */
+  private async handleMutate(ws: WebSocket, msg: Extract<ClientMessage, { type: "mutate" }>): Promise<void> {
+    const mutationId = msg.mutationId ?? crypto.randomUUID();
+
+    // Idempotency: if this exact mutation was already applied, just re-ack.
+    if (this.isMutationProcessed(mutationId)) {
+      this.sendTo(ws, { type: "ack", mutationId });
+      return;
+    }
+
+    const result = this.applyMutate(msg.op);
+    if (!result.ok) {
+      logPersistError({
+        mutationId,
+        operation: msg.op.kind,
+        collection: String(msg.op.collection),
+        entityId: entityIdOf(msg.op),
+        error: result.error,
+      });
+      this.sendTo(ws, { type: "nack", mutationId, error: result.error });
+      return;
+    }
+
+    // Durability first: commit to SQLite and wait for the write to be
+    // durable BEFORE broadcasting or acknowledging. Multiple rapid mutations
+    // each go through here in order — an older snapshot can never overwrite
+    // a newer one because every write serializes on the DO input gate.
+    await this.persistNow();
+    await this.recordMutationProcessed(mutationId);
+
+    this.broadcast({ type: "patch", op: msg.op, actor: msg.actor });
+    this.sendTo(ws, { type: "ack", mutationId });
+  }
+
+  private async handleRecover(ws: WebSocket, msg: Extract<ClientMessage, { type: "recover" }>): Promise<void> {
+    const mutationId = msg.mutationId ?? crypto.randomUUID();
+    if (this.isMutationProcessed(mutationId)) {
+      this.sendTo(ws, { type: "ack", mutationId });
+      return;
+    }
+    const recovered = this.applyRecover(msg.historyId);
+    if (!recovered.ok) {
+      logPersistError({
+        mutationId,
+        operation: "recover",
+        collection: "-",
+        entityId: msg.historyId,
+        error: recovered.error,
+      });
+      this.sendTo(ws, { type: "nack", mutationId, error: recovered.error });
+      return;
+    }
+    await this.persistNow();
+    await this.recordMutationProcessed(mutationId);
+    this.broadcast({ type: "recover", historyId: msg.historyId, restored: recovered.value });
+    this.sendTo(ws, { type: "ack", mutationId });
+  }
+
+  private async handleClearHistory(ws: WebSocket, msg: Extract<ClientMessage, { type: "clearHistory" }>): Promise<void> {
+    const mutationId = msg.mutationId ?? crypto.randomUUID();
+    if (this.isMutationProcessed(mutationId)) {
+      this.sendTo(ws, { type: "ack", mutationId });
+      return;
+    }
+    this.store = { ...(this.store as DataStore), history: [] };
+    await this.persistNow();
+    await this.recordMutationProcessed(mutationId);
+    this.broadcast({ type: "clearHistory" });
+    this.sendTo(ws, { type: "ack", mutationId });
   }
 
   // ─────────────────────────── Mutation logic ───────────────────────────
@@ -306,6 +423,7 @@ export class Workspace extends DurableObject<Env> {
       Document: "documents",
       "WhatsApp Log": "whatsappLogs",
       "WhatsApp Settings": "whatsappSettings",
+      "Lease Template Field": "leaseTemplateFields",
     };
     const collection = map[entry.entityType];
     if (!collection) return { ok: false, error: `unknown entity type: ${entry.entityType}` };
@@ -339,21 +457,43 @@ export class Workspace extends DurableObject<Env> {
     this.store = { ...EMPTY_STORE };
   }
 
-  private persistThrottle: ReturnType<typeof setTimeout> | null = null;
+  /**
+   * Durably commit the current store to SQLite.
+   * `storage.sql.exec` runs synchronously; `storage.sync()` guarantees the
+   * write is durable before we proceed. No throttling — every mutation is
+   * committed before its ack, so rapid mutations can never be lost and an
+   * older snapshot can never overwrite a newer one (writes serialize on the
+   * Durable Object input gate).
+   */
+  private async persistNow(): Promise<void> {
+    const snapshot = JSON.stringify(this.store);
+    this.ctx.storage.sql.exec(
+      `INSERT INTO kv (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+      "store",
+      snapshot,
+    );
+    await this.ctx.storage.sync();
+  }
 
-  private persist(): void {
-    if (this.persistThrottle) return;
-    this.persistThrottle = setTimeout(() => {
-      this.persistThrottle = null;
-      const snapshot = JSON.stringify(this.store);
-      this.ctx.waitUntil(
-        this.ctx.storage.sql.exec(
-          `INSERT INTO kv (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
-          "store",
-          snapshot,
-        ).catch((err: unknown) => console.error("persist failed", err)),
-      );
-    }, 150);
+  /** True if this mutation id was already applied (retry → no-op). */
+  private isMutationProcessed(mutationId: string): boolean {
+    const rows = this.ctx.storage.sql
+      .exec<{ id: string }>("SELECT id FROM processed_mutations WHERE id = ?", mutationId)
+      .toArray();
+    return rows.length > 0;
+  }
+
+  /** Record a processed mutation id so retries are idempotent. */
+  private async recordMutationProcessed(mutationId: string): Promise<void> {
+    this.ctx.storage.sql.exec(
+      "INSERT OR IGNORE INTO processed_mutations (id, ts) VALUES (?, ?)",
+      mutationId,
+      new Date().toISOString(),
+    );
+    // Keep the ledger small: prune entries older than 7 days.
+    const cutoff = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+    this.ctx.storage.sql.exec("DELETE FROM processed_mutations WHERE ts < ?", cutoff);
+    await this.ctx.storage.sync();
   }
 
   // ─────────────────────────── WhatsApp webhook status ───────────────────────────
@@ -419,7 +559,7 @@ export class Workspace extends DurableObject<Env> {
         patch,
       };
 
-      this.persist();
+      await this.persistNow();
       this.broadcast({ type: "patch", op, actor: "whatsapp-webhook" });
 
       return new Response("OK", { status: 200 });

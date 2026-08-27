@@ -34,6 +34,7 @@ import {
   getActorLabel,
   type ConnectionStatus,
   type MutateOp,
+  type SaveInfo,
   type ServerMessage,
 } from "@/lib/syncClient";
 import {
@@ -188,6 +189,10 @@ const ENTITY_TYPE_TO_COLLECTION: Record<string, keyof DataStore> = {
 export const [DataProvider, useData] = createContextHook(() => {
   const [data, setData] = useState<DataStore>(EMPTY_STORE);
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>("connecting");
+  // Server-confirmed save state: pending = awaiting server ack, failed =
+  // permanently failed after retries (surfaced in the header indicator).
+  const [saveInfo, setSaveInfo] = useState<SaveInfo>({ pending: 0, failed: 0, lastError: null });
+  const lastFailedCount = useRef(0);
   const actorRef = useRef<string>(typeof window === "undefined" ? "Guest-local" : getActorLabel());
   // Track the most recent history entry id we sent locally, so we don't
   // double-apply history entries echoed back from the server.
@@ -278,6 +283,22 @@ export const [DataProvider, useData] = createContextHook(() => {
       syncClient.dispose();
     };
   }, [handleServerMessage]);
+
+  // Track server save confirmations. When mutations permanently fail, tell
+  // the user clearly — never pretend the data was saved.
+  useEffect(() => {
+    syncClient.setSaveInfoHandler((info) => {
+      setSaveInfo(info);
+      if (info.failed > lastFailedCount.current) {
+        toast.error("Could not save. Please check your connection and try again.", {
+          description: "Your change is kept on screen — use the status indicator in the header to retry.",
+        });
+      }
+      lastFailedCount.current = info.failed;
+    });
+  }, []);
+
+  const retryFailedSaves = useCallback((): number => syncClient.retryFailedMutations(), []);
 
   // ─────────────────────────── Helpers ───────────────────────────
 
@@ -2746,6 +2767,8 @@ export const [DataProvider, useData] = createContextHook(() => {
   return {
     ...data,
     connectionStatus,
+    saveInfo,
+    retryFailedSaves,
     actorLabel: actorRef.current,
     addOwner,
     updateOwner,

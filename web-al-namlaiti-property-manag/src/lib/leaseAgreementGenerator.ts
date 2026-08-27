@@ -183,28 +183,13 @@ function formatAgreementRent(amount: number): string {
 }
 
 /**
- * Calculate the lease period between two dates.
- * Examples: "1 Month", "2 Months", "1 years fixed agreement", "1 years fixed agreement 2 Months".
+ * Render the lease period shown on the agreement.
+ * All leases are fixed one-year contracts, so the text is always the same.
  */
 function formatLeasePeriod(startIso: string, endIso: string): string {
-  const start = new Date(startIso);
-  const end = new Date(endIso);
-
-  let months = (end.getFullYear() - start.getFullYear()) * 12 + (end.getMonth() - start.getMonth());
-  const dayDiff = end.getDate() - start.getDate();
-  if (dayDiff < 0) {
-    months -= 1;
-  }
-  if (months < 0) months = 0;
-
-  const years = Math.floor(months / 12);
-  const remainingMonths = months % 12;
-
-  const yearText = years === 0 ? "" : years === 1 ? "1 years fixed agreement" : `${years} years fixed agreement`;
-  const monthText = remainingMonths === 0 ? "" : remainingMonths === 1 ? "1 Month" : `${remainingMonths} Months`;
-
-  if (yearText && monthText) return `${yearText} ${monthText}`;
-  return yearText || monthText || "1 years fixed agreement";
+  void startIso;
+  void endIso;
+  return "One year contract ( fixed agreement )";
 }
 
 /**

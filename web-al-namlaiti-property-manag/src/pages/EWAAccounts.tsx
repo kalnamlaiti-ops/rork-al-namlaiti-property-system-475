@@ -10,7 +10,7 @@ import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
 import { useData } from "@/context/DataContext";
 import EWAAccountForm from "@/components/forms/EWAAccountForm";
 import { Search, Pencil, Eye, Zap, Building2, Plus, Trash2, Link2 } from "lucide-react";
-import type { EWAAccount } from "@/types";
+import type { EWAAccount, Unit } from "@/types";
 
 function formatCurrency(amount: number) {
   return new Intl.NumberFormat("en-BH", { style: "currency", currency: "BHD", maximumFractionDigits: 2 }).format(amount);
@@ -30,6 +30,8 @@ export default function EWAAccounts() {
     ewaDistributions,
     getBuildingById,
     units,
+    leases,
+    tenants,
     deleteEWAAccount,
   } = useData();
   const [search, setSearch] = useState("");
@@ -42,25 +44,48 @@ export default function EWAAccounts() {
   const totalLinkedUnits = ewaAccounts.reduce((sum, a) => sum + a.linkedUnitIds.length, 0);
   const totalBilled = ewaDistributions.reduce((sum, d) => sum + d.totalAmount, 0);
 
+  // Precomputed unit → tenant names (via leases) so search never rebuilds lookups per keystroke.
+  const unitTenantNamesById = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const l of leases) {
+      const t = tenants.find((x) => x.id === l.tenantId);
+      if (!t) continue;
+      const prev = map.get(l.unitId);
+      map.set(l.unitId, prev ? `${prev} ${t.name}` : t.name);
+    }
+    return map;
+  }, [leases, tenants]);
+
+  const unitById = useMemo(() => {
+    const map = new Map<string, Unit>();
+    for (const u of units) map.set(u.id, u);
+    return map;
+  }, [units]);
+
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     if (!q) return ewaAccounts;
     return ewaAccounts.filter((a) => {
       const building = getBuildingById(a.buildingId);
       const buildingNo = building?.buildingNumber ?? building?.code ?? "";
-      const matchesLinkedUnit = a.linkedUnitIds.some((uid) => {
-        const u = units.find((x) => x.id === uid);
-        return (u?.unitNumber ?? "").toLowerCase().includes(q);
-      });
+      let matchesUnit = false;
+      let matchesTenant = false;
+      for (const uid of a.linkedUnitIds) {
+        const unit = unitById.get(uid);
+        if (unit && unit.unitNumber.toLowerCase().includes(q)) matchesUnit = true;
+        if ((unitTenantNamesById.get(uid) ?? "").toLowerCase().includes(q)) matchesTenant = true;
+        if (matchesUnit && matchesTenant) break;
+      }
       return (
         a.accountNumber.toLowerCase().includes(q) ||
         (a.nickname ?? "").toLowerCase().includes(q) ||
         (building?.name ?? "").toLowerCase().includes(q) ||
         buildingNo.toLowerCase().includes(q) ||
-        matchesLinkedUnit
+        matchesUnit ||
+        matchesTenant
       );
     });
-  }, [search, ewaAccounts, getBuildingById, units]);
+  }, [search, ewaAccounts, getBuildingById, unitById, unitTenantNamesById]);
 
   const openAdd = () => {
     setEditingAccount(undefined);
@@ -135,7 +160,7 @@ export default function EWAAccounts() {
       <div className="relative flex-1">
         <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
         <Input
-          placeholder="Search account no., nickname, building name / no., or unit..."
+          placeholder="Search account number, unit number, building, or tenant..."
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           className="pl-9"

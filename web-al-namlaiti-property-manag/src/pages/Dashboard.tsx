@@ -2,7 +2,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { StatusBadge } from "@/components/StatusBadge";
 import { useData } from "@/context/DataContext";
-import { Building2, Home, Users, FileText, AlertTriangle, CheckCircle2, Clock, MessageSquareWarning, ArrowRight, Receipt } from "lucide-react";
+import { Building2, Home, Users, FileText, AlertTriangle, CheckCircle2, Clock, MessageSquareWarning, ArrowRight, Receipt, Bookmark } from "lucide-react";
 import { Link } from "react-router-dom";
 import { format } from "date-fns";
 
@@ -15,6 +15,7 @@ export default function Dashboard() {
   const totalUnits = units.length;
   const occupied = units.filter((u) => u.status === "Occupied").length;
   const vacant = units.filter((u) => u.status === "Vacant").length;
+  const reserved = units.filter((u) => u.status === "Reserved").length;
   const occupancyRate = Math.round((occupied / totalUnits) * 100);
   const activeLeases = leases.filter((l) => l.status === "Active").length;
   const activeTenants = tenants.filter((t) => t.status === "Active").length;
@@ -36,6 +37,7 @@ export default function Dashboard() {
     { title: "Total Units", value: totalUnits, icon: Home, color: "bg-blue-100 text-blue-600" },
     { title: "Occupied", value: occupied, subtitle: `${occupancyRate}% occupancy`, icon: CheckCircle2, color: "bg-emerald-100 text-emerald-600" },
     { title: "Vacant", value: vacant, icon: Clock, color: "bg-slate-100 text-slate-600" },
+    { title: "Reserved", value: reserved, subtitle: "Flats on hold", icon: Bookmark, color: "bg-violet-100 text-violet-600" },
     { title: "Active Tenants", value: activeTenants, icon: Users, color: "bg-purple-100 text-purple-600" },
     { title: "Active Leases", value: activeLeases, icon: FileText, color: "bg-cyan-100 text-cyan-600" },
     { title: "Expiring (60d)", value: expiringSoon, icon: Clock, color: "bg-orange-100 text-orange-600" },

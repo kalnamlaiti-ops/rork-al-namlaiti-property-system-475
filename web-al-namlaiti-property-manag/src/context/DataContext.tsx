@@ -2207,7 +2207,7 @@ export const [DataProvider, useData] = createContextHook(() => {
   const COMPANY_INFO = {
     name: "Al Namlaiti Property Management",
     email: "namlity@gmail.com",
-    phone: "+973 3380 4311",
+    phone: "+973 17253953",
     address: "Manama, Kingdom of Bahrain",
   };
 

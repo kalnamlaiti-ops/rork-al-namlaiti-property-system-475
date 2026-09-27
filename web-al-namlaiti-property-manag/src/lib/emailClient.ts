@@ -169,7 +169,7 @@ If you have any questions regarding this payment, please do not hesitate to cont
 Best regards,
 Al Namlaiti Property Management
 namlity@gmail.com
-+973 3380 4311`;
++973 17253953`;
 
   if (!FUNCTIONS_URL) {
     console.warn("[email] No backend URL configured — receipt email queued but not sent");

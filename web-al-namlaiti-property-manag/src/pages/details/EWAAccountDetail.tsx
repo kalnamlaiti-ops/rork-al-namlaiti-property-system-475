@@ -80,6 +80,12 @@ export default function EWAAccountDetail() {
     [account, ewaDistributions],
   );
 
+  // Per-unit EWA bills linked to this shared meter account.
+  const accountBills = useMemo(
+    () => (account ? ewaBills.filter((b) => b.ewaAccountId === account.id) : []),
+    [account, ewaBills],
+  );
+
   // Live preview of allocation for the bill dialog.
   const preview = useMemo(() => {
     if (!account) return null;
@@ -522,6 +528,60 @@ export default function EWAAccountDetail() {
                     </div>
                   );
                 })}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Per-unit EWA bills created from this account */}
+      <Card>
+        <CardContent className="p-6">
+          <div className="mb-4 flex items-center justify-between">
+            <h3 className="text-base font-semibold">EWA Bills from This Account ({accountBills.length})</h3>
+            <Button size="sm" variant="outline" onClick={() => navigate("/ewa-bills")}>
+              <FileText className="mr-1 h-3.5 w-3.5" /> All EWA Bills
+            </Button>
+          </div>
+          {accountBills.length === 0 ? (
+            <p className="py-4 text-sm text-muted-foreground">
+              No per-unit EWA bills linked yet. They are created automatically when a distribution is processed, or log one from EWA Bills and pick this account.
+            </p>
+          ) : (
+            <div className="overflow-x-auto rounded-lg border">
+              <table className="w-full text-sm">
+                <thead className="bg-muted/50 text-muted-foreground">
+                  <tr>
+                    <th className="px-4 py-3 text-left font-medium">Bill #</th>
+                    <th className="px-4 py-3 text-left font-medium">Unit</th>
+                    <th className="px-4 py-3 text-left font-medium">Month</th>
+                    <th className="px-4 py-3 text-left font-medium">Amount</th>
+                    <th className="px-4 py-3 text-left font-medium">Status</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y">
+                  {accountBills
+                    .slice()
+                    .sort((a, b) => b.month.localeCompare(a.month))
+                    .map((b) => {
+                      const u = units.find((x) => x.id === b.unitId);
+                      return (
+                        <tr key={b.id} className="hover:bg-muted/30">
+                          <td className="px-4 py-3 font-medium">
+                            <Link to={`/ewa-bills/${b.id}`} className="text-primary hover:underline">
+                              {b.billNumber}
+                            </Link>
+                          </td>
+                          <td className="px-4 py-3">{u?.unitNumber ?? "—"}</td>
+                          <td className="px-4 py-3">{b.month}</td>
+                          <td className="px-4 py-3">{formatCurrency(b.billAmount)}</td>
+                          <td className="px-4 py-3">
+                            <StatusBadge status={b.status} />
+                          </td>
+                        </tr>
+                      );
+                    })}
+                </tbody>
+              </table>
             </div>
           )}
         </CardContent>

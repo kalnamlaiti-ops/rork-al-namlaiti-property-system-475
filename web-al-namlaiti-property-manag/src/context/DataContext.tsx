@@ -1601,7 +1601,8 @@ export const [DataProvider, useData] = createContextHook(() => {
           excess: alloc.amount,
           dueDate: dist.dueDate,
           status: "Pending",
-          // Link back to the distribution for traceability.
+          // Link the bill back to the shared meter account and the distribution.
+          ewaAccountId: account.id,
           invoiceId: undefined,
         };
         sendAdd("ewaBills", ewaBill);

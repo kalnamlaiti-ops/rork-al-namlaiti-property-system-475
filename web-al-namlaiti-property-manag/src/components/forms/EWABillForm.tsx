@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -13,7 +13,7 @@ interface EWABillFormProps {
 const ewaStatuses: EWABill["status"][] = ["Pending", "Invoiced", "Paid"];
 
 export default function EWABillForm({ initialData, onClose }: EWABillFormProps) {
-  const { addEWABill, updateEWABill, leases, units, ewaBills } = useData();
+  const { addEWABill, updateEWABill, leases, units, ewaBills, ewaAccounts } = useData();
   const isEdit = Boolean(initialData);
 
   const [form, setForm] = useState({
@@ -26,6 +26,7 @@ export default function EWABillForm({ initialData, onClose }: EWABillFormProps) 
     limit: initialData?.limit ?? 0,
     dueDate: initialData?.dueDate ?? new Date().toISOString().split("T")[0],
     status: initialData?.status ?? "Pending",
+    ewaAccountId: initialData?.ewaAccountId ?? "",
   });
 
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -33,16 +34,32 @@ export default function EWABillForm({ initialData, onClose }: EWABillFormProps) 
   const selectedLease = leases.find((l) => l.id === form.leaseId);
   const leaseUnit = selectedLease ? units.find((u) => u.id === selectedLease.unitId) : undefined;
 
+  // EWA accounts available for the bill — the shared meters of the unit's building.
+  const buildingAccounts = useMemo(
+    () => ewaAccounts.filter((a) => a.buildingId === form.buildingId),
+    [ewaAccounts, form.buildingId],
+  );
+
   const update = (field: keyof typeof form, value: string | number) => {
     setForm((prev) => ({ ...prev, [field]: value }));
     if (field === "leaseId") {
       const lease = leases.find((l) => l.id === value);
       const unit = lease ? units.find((u) => u.id === lease.unitId) : undefined;
+      const buildingId = unit?.buildingId ?? "";
+      // Keep the chosen account if it still belongs to the new building,
+      // otherwise auto-select the building's active shared meter.
+      const stillValid =
+        form.ewaAccountId &&
+        ewaAccounts.some((a) => a.id === form.ewaAccountId && a.buildingId === buildingId);
+      const accountsForBuilding = ewaAccounts.filter((a) => a.buildingId === buildingId);
+      const autoAccount =
+        accountsForBuilding.find((a) => a.status === "Active") ?? accountsForBuilding[0];
       setForm((prev) => ({
         ...prev,
         leaseId: value as string,
         unitId: unit?.id ?? "",
-        buildingId: unit?.buildingId ?? "",
+        buildingId,
+        ewaAccountId: stillValid ? prev.ewaAccountId : autoAccount?.id ?? "",
       }));
     }
     if (errors[field]) {
@@ -70,6 +87,7 @@ export default function EWABillForm({ initialData, onClose }: EWABillFormProps) 
       leaseId: form.leaseId,
       unitId: form.unitId,
       buildingId: form.buildingId,
+      ewaAccountId: form.ewaAccountId || undefined,
       month: form.month,
       billAmount: Number(form.billAmount),
       limit: Number(form.limit),
@@ -116,6 +134,31 @@ export default function EWABillForm({ initialData, onClose }: EWABillFormProps) 
           <div className="space-y-2">
             <Label htmlFor="unitId">Unit</Label>
             <Input id="unitId" value={leaseUnit?.unitNumber ?? form.unitId} disabled />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="ewaAccountId">EWA Account</Label>
+            <select
+              id="ewaAccountId"
+              value={form.ewaAccountId}
+              onChange={(e) => update("ewaAccountId", e.target.value)}
+              className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+            >
+              <option value="">
+                {buildingAccounts.length === 0
+                  ? "No EWA account for this building"
+                  : "Not linked"}
+              </option>
+              {buildingAccounts.map((a) => (
+                <option key={a.id} value={a.id}>
+                  {a.accountNumber}
+                  {a.nickname ? ` — ${a.nickname}` : ""}
+                  {a.status === "Inactive" ? " (Inactive)" : ""}
+                </option>
+              ))}
+            </select>
+            <p className="text-xs text-muted-foreground">
+              Shared meter of the unit's building — auto-selected from the lease.
+            </p>
           </div>
           <div className="space-y-2">
             <Label htmlFor="month">Month *</Label>

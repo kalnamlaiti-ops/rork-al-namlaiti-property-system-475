@@ -316,6 +316,8 @@ export interface EWABill {
   readings?: { previous: number; current: number };
   /** ID of the invoice that billed this EWA bill (set after invoicing). */
   invoiceId?: string;
+  /** Shared EWA account (meter) this bill belongs to. */
+  ewaAccountId?: string;
 }
 
 export interface Complaint {

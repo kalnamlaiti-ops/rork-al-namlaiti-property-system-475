@@ -15,13 +15,14 @@ function formatCurrency(amount: number) {
 export default function EWABillDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { ewaBills, leases, units, buildings, getBuildingById } = useData();
+  const { ewaBills, leases, units, buildings, ewaAccounts, getBuildingById } = useData();
   const [dialogOpen, setDialogOpen] = useState(false);
 
   const bill = id ? ewaBills.find((b) => b.id === id) : undefined;
   const lease = bill ? leases.find((l) => l.id === bill.leaseId) : undefined;
   const unit = bill ? units.find((u) => u.id === bill.unitId) : undefined;
   const building = bill ? getBuildingById(bill.buildingId) : undefined;
+  const account = bill?.ewaAccountId ? ewaAccounts.find((a) => a.id === bill.ewaAccountId) : undefined;
 
   if (!bill) {
     return (
@@ -66,6 +67,7 @@ export default function EWABillDetail() {
               <div><p className="text-sm text-muted-foreground">Lease</p><p className="font-medium flex items-center gap-2"><FileText className="h-4 w-4" /> <Link to={`/leases/${lease?.id}`} className="text-primary hover:underline">{lease?.contractNumber}</Link></p></div>
               <div><p className="text-sm text-muted-foreground">Unit</p><p className="font-medium flex items-center gap-2"><Home className="h-4 w-4" /> <Link to={`/units/${unit?.id}`} className="text-primary hover:underline">{unit?.unitNumber}</Link></p></div>
               <div><p className="text-sm text-muted-foreground">Building</p><p className="font-medium flex items-center gap-2"><Building2 className="h-4 w-4" /> <Link to={`/buildings/${building?.id}`} className="text-primary hover:underline">{building?.name}</Link></p></div>
+              <div><p className="text-sm text-muted-foreground">EWA Account</p><p className="font-medium flex items-center gap-2"><Zap className="h-4 w-4" /> {account ? <Link to={`/ewa-accounts/${account.id}`} className="text-primary hover:underline">{account.accountNumber}</Link> : <span className="text-muted-foreground">—</span>}</p></div>
             </div>
           </CardContent>
         </Card>

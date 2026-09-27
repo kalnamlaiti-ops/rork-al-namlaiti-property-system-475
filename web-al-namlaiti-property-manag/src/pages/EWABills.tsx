@@ -19,7 +19,7 @@ function formatCurrency(amount: number) {
 
 export default function EWABills() {
   const navigate = useNavigate();
-  const { ewaBills, leases, units, getBuildingById, updateEWABill, deleteEWABill } = useData();
+  const { ewaBills, leases, units, ewaAccounts, getBuildingById, updateEWABill, deleteEWABill } = useData();
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("All");
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -34,15 +34,17 @@ export default function EWABills() {
       const lease = leases.find((l) => l.id === b.leaseId);
       const unit = units.find((u) => u.id === b.unitId);
       const building = getBuildingById(b.buildingId);
+      const account = b.ewaAccountId ? ewaAccounts.find((a) => a.id === b.ewaAccountId) : undefined;
       const matchesSearch =
         b.billNumber.toLowerCase().includes(search.toLowerCase()) ||
         (lease?.contractNumber ?? "").toLowerCase().includes(search.toLowerCase()) ||
         (unit?.unitNumber ?? "").toLowerCase().includes(search.toLowerCase()) ||
-        (building?.name ?? "").toLowerCase().includes(search.toLowerCase());
+        (building?.name ?? "").toLowerCase().includes(search.toLowerCase()) ||
+        (account?.accountNumber ?? "").toLowerCase().includes(search.toLowerCase());
       const matchesStatus = statusFilter === "All" || b.status === statusFilter;
       return matchesSearch && matchesStatus;
     });
-  }, [search, statusFilter, ewaBills, leases, units, getBuildingById]);
+  }, [search, statusFilter, ewaBills, leases, units, ewaAccounts, getBuildingById]);
 
   const openAdd = () => {
     setEditingBill(undefined);
@@ -125,6 +127,7 @@ export default function EWABills() {
               <tr>
                 <th className="px-4 py-3 text-left font-medium">Lease</th>
                 <th className="px-4 py-3 text-left font-medium">Unit</th>
+                <th className="px-4 py-3 text-left font-medium">EWA Account</th>
                 <th className="px-4 py-3 text-left font-medium">Month</th>
                 <th className="px-4 py-3 text-left font-medium">Bill</th>
                 <th className="px-4 py-3 text-left font-medium">Limit</th>
@@ -136,7 +139,7 @@ export default function EWABills() {
             <tbody className="divide-y">
               {filtered.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className="px-4 py-12 text-center text-muted-foreground">
+                  <td colSpan={9} className="px-4 py-12 text-center text-muted-foreground">
                     No EWA bills logged.
                   </td>
                 </tr>
@@ -144,10 +147,24 @@ export default function EWABills() {
                 filtered.map((b) => {
                   const lease = leases.find((l) => l.id === b.leaseId);
                   const unit = units.find((u) => u.id === b.unitId);
+                  const account = b.ewaAccountId ? ewaAccounts.find((a) => a.id === b.ewaAccountId) : undefined;
                   return (
                     <tr key={b.id} className="hover:bg-muted/30">
                       <td className="px-4 py-3 font-medium">{lease?.contractNumber}</td>
                       <td className="px-4 py-3">{unit?.unitNumber}</td>
+                      <td className="px-4 py-3">
+                        {account ? (
+                          <button
+                            type="button"
+                            className="text-primary hover:underline"
+                            onClick={() => navigate(`/ewa-accounts/${account.id}`)}
+                          >
+                            {account.accountNumber}
+                          </button>
+                        ) : (
+                          <span className="text-muted-foreground">—</span>
+                        )}
+                      </td>
                       <td className="px-4 py-3">{b.month}</td>
                       <td className="px-4 py-3">{formatCurrency(b.billAmount)}</td>
                       <td className="px-4 py-3 text-muted-foreground">{formatCurrency(b.limit)}</td>

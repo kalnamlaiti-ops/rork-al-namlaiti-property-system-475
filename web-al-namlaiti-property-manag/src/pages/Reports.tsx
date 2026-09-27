@@ -94,7 +94,7 @@ export default function Reports() {
       {/* Reports & Documents */}
       <div>
         <h3 className="mb-3 text-base font-semibold">Reports & Documents</h3>
-        <div className="grid gap-4 md:grid-cols-3">
+        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
           <Card className="cursor-pointer transition-shadow hover:shadow-md" onClick={() => navigate("/reports/tenants")}>
             <CardContent className="flex items-center gap-4 p-5">
               <div className="rounded-lg bg-indigo-100 p-3 text-indigo-600">
@@ -125,6 +125,17 @@ export default function Reports() {
               <div>
                 <p className="font-semibold text-foreground">Property Management Report</p>
                 <p className="text-sm text-muted-foreground">Portfolio summary with print & PDF</p>
+              </div>
+            </CardContent>
+          </Card>
+          <Card className="cursor-pointer transition-shadow hover:shadow-md" onClick={() => navigate("/reports/rent-roll")}>
+            <CardContent className="flex items-center gap-4 p-5">
+              <div className="rounded-lg bg-blue-100 p-3 text-blue-600">
+                <Building2 className="h-6 w-6" />
+              </div>
+              <div>
+                <p className="font-semibold text-foreground">Building Rent Roll</p>
+                <p className="text-sm text-muted-foreground">Per-building tenant list & rent collection</p>
               </div>
             </CardContent>
           </Card>

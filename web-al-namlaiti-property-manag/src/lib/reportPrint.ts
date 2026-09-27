@@ -11,6 +11,8 @@ export interface ReportPrintOptions {
   subtitle?: string;
   companyName?: string;
   sections: ReportSection[];
+  /** Page orientation — landscape for wide rent-roll tables. */
+  orientation?: "portrait" | "landscape";
 }
 
 function esc(value: string): string {
@@ -82,7 +84,7 @@ export function buildReportPrintHtml(o: ReportPrintOptions): string {
 <meta charset="utf-8" />
 <title>${esc(o.title)}</title>
 <style>
-  @page { size: A4; margin: 14mm 12mm; }
+  @page { size: A4 ${o.orientation === "landscape" ? "landscape" : "portrait"}; margin: 14mm 12mm; }
   * { box-sizing: border-box; }
   body { font-family: "Segoe UI", Arial, Helvetica, sans-serif; color: #111827; margin: 0; font-size: 11px; }
   .report-header { border-bottom: 2px solid #0f2942; padding-bottom: 10px; margin-bottom: 16px; }

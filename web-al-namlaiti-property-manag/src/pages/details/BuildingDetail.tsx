@@ -6,7 +6,7 @@ import { StatusBadge } from "@/components/StatusBadge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { useData } from "@/context/DataContext";
 import BuildingForm from "@/components/forms/BuildingForm";
-import { ArrowLeft, Pencil, MapPin, Layers, Home, Users, Plus, AlertTriangle, Shield, Zap, Link2 } from "lucide-react";
+import { ArrowLeft, Pencil, MapPin, Layers, Home, Users, Plus, AlertTriangle, Shield, Zap, Link2, FileSpreadsheet } from "lucide-react";
 
 export default function BuildingDetail() {
   const { id } = useParams<{ id: string }>();
@@ -44,9 +44,14 @@ export default function BuildingDetail() {
         <Button variant="ghost" onClick={() => navigate("/buildings")}>
           <ArrowLeft className="mr-2 h-4 w-4" /> Back
         </Button>
-        <Button variant="outline" onClick={() => setDialogOpen(true)}>
-          <Pencil className="mr-2 h-4 w-4" /> Edit
-        </Button>
+        <div className="flex flex-wrap justify-end gap-2">
+          <Button variant="outline" onClick={() => navigate(`/reports/rent-roll?building=${building.id}`)}>
+            <FileSpreadsheet className="mr-2 h-4 w-4" /> View Rent Roll
+          </Button>
+          <Button variant="outline" onClick={() => setDialogOpen(true)}>
+            <Pencil className="mr-2 h-4 w-4" /> Edit
+          </Button>
+        </div>
       </div>
 
       <div>

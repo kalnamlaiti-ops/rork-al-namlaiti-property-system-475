@@ -37,13 +37,19 @@ export interface ReportPdfOptions {
   rows?: string[][];
   /** Info/table sections (individual & portfolio reports). */
   sections?: ReportSection[];
+  /** Page orientation — landscape for wide rent-roll tables. */
+  orientation?: "portrait" | "landscape";
   footerNote?: string;
 }
 
 const PAGE_MARGIN = 40;
 const HEADER_BAND = 72;
-const BOTTOM_LIMIT = 788;
 const NAVY = { r: 15, g: 41, b: 66 } as const;
+
+/** Usable content bottom edge — works for portrait AND landscape pages. */
+function bottomLimitOf(doc: jsPDF): number {
+  return doc.internal.pageSize.getHeight() - 54;
+}
 
 function setNavyFill(doc: jsPDF) {
   doc.setFillColor(NAVY.r, NAVY.g, NAVY.b);
@@ -86,11 +92,12 @@ function drawFooters(doc: jsPDF, o: ReportPdfOptions, dateLabel: string) {
     doc.setFontSize(8);
     doc.setTextColor(120, 120, 120);
     doc.setDrawColor(215, 215, 215);
-    doc.line(PAGE_MARGIN, 800, pageWidth - PAGE_MARGIN, 800);
-    doc.text(`Report date: ${dateLabel}`, PAGE_MARGIN, 812);
-    doc.text(`Page ${i} of ${total}`, pageWidth - PAGE_MARGIN, 812, { align: "right" });
+    const pageHeight = doc.internal.pageSize.getHeight();
+    doc.line(PAGE_MARGIN, pageHeight - 42, pageWidth - PAGE_MARGIN, pageHeight - 42);
+    doc.text(`Report date: ${dateLabel}`, PAGE_MARGIN, pageHeight - 30);
+    doc.text(`Page ${i} of ${total}`, pageWidth - PAGE_MARGIN, pageHeight - 30, { align: "right" });
     if (o.footerNote) {
-      doc.text(doc.splitTextToSize(o.footerNote, pageWidth - PAGE_MARGIN * 2 - 120)[0] ?? o.footerNote, pageWidth / 2, 812, {
+      doc.text(doc.splitTextToSize(o.footerNote, pageWidth - PAGE_MARGIN * 2 - 120)[0] ?? o.footerNote, pageWidth / 2, pageHeight - 30, {
         align: "center",
       });
     }
@@ -147,7 +154,7 @@ function drawTable(
     const maxLines = Math.max(1, ...cellLines.map((l) => l.length));
     const rowH = maxLines * lineH + 8;
 
-    if (y + rowH > BOTTOM_LIMIT) {
+    if (y + rowH > bottomLimitOf(doc)) {
       doc.addPage();
       y = HEADER_BAND + 24;
       drawHeaderRow();
@@ -190,7 +197,7 @@ function drawInfoBlock(doc: jsPDF, info: [string, string][], startY: number): nu
   info.forEach(([label, value], idx) => {
     const valueLines = doc.splitTextToSize(value || "—", tableW - labelW - 14);
     const rowH = Math.max(lineH, valueLines.length * lineH + 2);
-    if (y + rowH > BOTTOM_LIMIT) {
+    if (y + rowH > bottomLimitOf(doc)) {
       doc.addPage();
       y = HEADER_BAND + 24;
     }
@@ -213,7 +220,7 @@ function drawInfoBlock(doc: jsPDF, info: [string, string][], startY: number): nu
 
 function drawSectionHeading(doc: jsPDF, text: string, startY: number): number {
   let y = startY;
-  if (y + 34 > BOTTOM_LIMIT) {
+  if (y + 34 > bottomLimitOf(doc)) {
     doc.addPage();
     y = HEADER_BAND + 24;
   }
@@ -233,7 +240,7 @@ function drawTotals(doc: jsPDF, totals: [string, string][], startY: number): num
   const boxX = pageWidth - PAGE_MARGIN - 240;
   totals.forEach(([label, value], idx) => {
     const isLast = idx === totals.length - 1;
-    if (y + 20 > BOTTOM_LIMIT) {
+    if (y + 20 > bottomLimitOf(doc)) {
       doc.addPage();
       y = HEADER_BAND + 24;
     }
@@ -259,7 +266,7 @@ function drawTotals(doc: jsPDF, totals: [string, string][], startY: number): num
 
 /** Build the report PDF (multi-page, repeated table headers, page numbers). */
 export function buildReportPdf(o: ReportPdfOptions): jsPDF {
-  const doc = new jsPDF({ unit: "pt", format: "a4" });
+  const doc = new jsPDF({ unit: "pt", format: "a4", orientation: o.orientation ?? "portrait" });
   const dateLabel = new Date().toLocaleDateString("en-GB", {
     day: "2-digit",
     month: "long",

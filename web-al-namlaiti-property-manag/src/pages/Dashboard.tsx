@@ -11,7 +11,7 @@ function formatCurrency(amount: number) {
 }
 
 export default function Dashboard() {
-  const { buildings, units, leases, tenants, invoices, getTenantById, getUnitById, getBuildingById } = useData();
+  const { buildings, units, leases, tenants, invoices, complaints, getTenantById, getUnitById, getBuildingById } = useData();
   const totalUnits = units.length;
   const occupied = units.filter((u) => u.status === "Occupied").length;
   const vacant = units.filter((u) => u.status === "Vacant").length;
@@ -24,7 +24,8 @@ export default function Dashboard() {
     const diff = Math.ceil((end.getTime() - new Date().getTime()) / (1000 * 60 * 60 * 24));
     return l.status === "Active" && diff <= 60 && diff > 0;
   }).length;
-  const openComplaints = 5;
+  // Unresolved tickets (Open or In Progress) — real count from live data.
+  const openComplaints = complaints.filter((c) => c.status === "Open" || c.status === "In Progress").length;
 
   const totalBilled = invoices.reduce((sum, i) => sum + i.amount, 0);
   const totalCollected = totalBilled - invoices.reduce((sum, i) => sum + i.balance, 0);

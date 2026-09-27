@@ -11,7 +11,7 @@ import { ArrowLeft, Pencil, MapPin, Layers, Home, Users, Plus, AlertTriangle, Sh
 export default function BuildingDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { buildings, units, owners, leases, getBuildingById, getOwnerById, getBuildingEWAAccounts, ewaDistributions } = useData();
+  const { buildings, units, owners, leases, tenants, complaints, getBuildingById, getOwnerById, getBuildingEWAAccounts, ewaDistributions } = useData();
   const [dialogOpen, setDialogOpen] = useState(false);
 
   const building = id ? getBuildingById(id) : undefined;
@@ -32,7 +32,14 @@ export default function BuildingDetail() {
   const vacant = buildingUnits.filter((u) => u.status === "Vacant").length;
   const occupancyRate = buildingUnits.length > 0 ? Math.round((occupied / buildingUnits.length) * 100) : 0;
   const owner = getOwnerById(building.ownerId);
-  const openComplaints = 0; // placeholder
+  // Real count of unresolved tickets for this building (by unit's building, falling back to tenant's building).
+  const openComplaints = complaints.filter((c) => {
+    if (c.status !== "Open" && c.status !== "In Progress") return false;
+    const unit = units.find((u) => u.id === c.unitId);
+    if (unit) return unit.buildingId === building.id;
+    const tenant = tenants.find((t) => t.id === c.tenantId);
+    return tenant ? tenant.buildingId === building.id : false;
+  }).length;
   const buildingEWAAccounts = getBuildingEWAAccounts(building.id);
   const buildingEWABilled = ewaDistributions
     .filter((d) => buildingEWAAccounts.some((a) => a.id === d.accountId))

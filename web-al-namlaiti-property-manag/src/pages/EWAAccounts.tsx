@@ -43,15 +43,24 @@ export default function EWAAccounts() {
   const totalBilled = ewaDistributions.reduce((sum, d) => sum + d.totalAmount, 0);
 
   const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return ewaAccounts;
     return ewaAccounts.filter((a) => {
       const building = getBuildingById(a.buildingId);
-      const matchesSearch =
-        a.accountNumber.toLowerCase().includes(search.toLowerCase()) ||
-        (a.nickname ?? "").toLowerCase().includes(search.toLowerCase()) ||
-        (building?.name ?? "").toLowerCase().includes(search.toLowerCase());
-      return matchesSearch;
+      const buildingNo = building?.buildingNumber ?? building?.code ?? "";
+      const matchesLinkedUnit = a.linkedUnitIds.some((uid) => {
+        const u = units.find((x) => x.id === uid);
+        return (u?.unitNumber ?? "").toLowerCase().includes(q);
+      });
+      return (
+        a.accountNumber.toLowerCase().includes(q) ||
+        (a.nickname ?? "").toLowerCase().includes(q) ||
+        (building?.name ?? "").toLowerCase().includes(q) ||
+        buildingNo.toLowerCase().includes(q) ||
+        matchesLinkedUnit
+      );
     });
-  }, [search, ewaAccounts, getBuildingById]);
+  }, [search, ewaAccounts, getBuildingById, units]);
 
   const openAdd = () => {
     setEditingAccount(undefined);
@@ -126,7 +135,7 @@ export default function EWAAccounts() {
       <div className="relative flex-1">
         <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
         <Input
-          placeholder="Search account number, nickname, building..."
+          placeholder="Search account no., nickname, building name / no., or unit..."
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           className="pl-9"
@@ -171,7 +180,12 @@ export default function EWAAccounts() {
                       </td>
                       <td className="px-4 py-3">
                         {building ? (
-                          <span className="text-foreground">{building.name}</span>
+                          <div>
+                            <span className="text-foreground">{building.name}</span>
+                            {(building.buildingNumber ?? building.code) && (
+                              <div className="text-xs text-muted-foreground">Bldg No. {building.buildingNumber ?? building.code}</div>
+                            )}
+                          </div>
                         ) : (
                           <span className="text-muted-foreground">—</span>
                         )}

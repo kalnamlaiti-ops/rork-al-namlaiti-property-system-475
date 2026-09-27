@@ -9,8 +9,9 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } f
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
 import { useData } from "@/context/DataContext";
 import EWAAccountForm from "@/components/forms/EWAAccountForm";
+import { filterEwaAccounts, linkedUnitLabels, linkedTenantNames } from "@/lib/ewaSearch";
 import { Search, Pencil, Eye, Zap, Building2, Plus, Trash2, Link2 } from "lucide-react";
-import type { EWAAccount, Unit } from "@/types";
+import type { EWAAccount } from "@/types";
 
 function formatCurrency(amount: number) {
   return new Intl.NumberFormat("en-BH", { style: "currency", currency: "BHD", maximumFractionDigits: 2 }).format(amount);
@@ -44,48 +45,12 @@ export default function EWAAccounts() {
   const totalLinkedUnits = ewaAccounts.reduce((sum, a) => sum + a.linkedUnitIds.length, 0);
   const totalBilled = ewaDistributions.reduce((sum, d) => sum + d.totalAmount, 0);
 
-  // Precomputed unit → tenant names (via leases) so search never rebuilds lookups per keystroke.
-  const unitTenantNamesById = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const l of leases) {
-      const t = tenants.find((x) => x.id === l.tenantId);
-      if (!t) continue;
-      const prev = map.get(l.unitId);
-      map.set(l.unitId, prev ? `${prev} ${t.name}` : t.name);
-    }
-    return map;
-  }, [leases, tenants]);
-
-  const unitById = useMemo(() => {
-    const map = new Map<string, Unit>();
-    for (const u of units) map.set(u.id, u);
-    return map;
-  }, [units]);
-
-  const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    if (!q) return ewaAccounts;
-    return ewaAccounts.filter((a) => {
-      const building = getBuildingById(a.buildingId);
-      const buildingNo = building?.buildingNumber ?? building?.code ?? "";
-      let matchesUnit = false;
-      let matchesTenant = false;
-      for (const uid of a.linkedUnitIds) {
-        const unit = unitById.get(uid);
-        if (unit && unit.unitNumber.toLowerCase().includes(q)) matchesUnit = true;
-        if ((unitTenantNamesById.get(uid) ?? "").toLowerCase().includes(q)) matchesTenant = true;
-        if (matchesUnit && matchesTenant) break;
-      }
-      return (
-        a.accountNumber.toLowerCase().includes(q) ||
-        (a.nickname ?? "").toLowerCase().includes(q) ||
-        (building?.name ?? "").toLowerCase().includes(q) ||
-        buildingNo.toLowerCase().includes(q) ||
-        matchesUnit ||
-        matchesTenant
-      );
-    });
-  }, [search, ewaAccounts, getBuildingById, unitById, unitTenantNamesById]);
+  // Single shared search: account number, linked unit number (real relationship),
+  // building number/name, and tenant name — see lib/ewaSearch.ts.
+  const filtered = useMemo(
+    () => filterEwaAccounts(ewaAccounts, search, { units, leases, tenants, getBuildingById }),
+    [ewaAccounts, search, units, leases, tenants, getBuildingById],
+  );
 
   const openAdd = () => {
     setEditingAccount(undefined);
@@ -195,6 +160,8 @@ export default function EWAAccounts() {
                     const u = units.find((x) => x.id === uid);
                     return u && u.status === "Occupied";
                   }).length;
+                  const unitLabels = linkedUnitLabels(a, units);
+                  const tenantNames = linkedTenantNames(a, leases, tenants);
                   return (
                     <tr key={a.id} className="hover:bg-muted/30">
                       <td className="px-4 py-3">
@@ -207,8 +174,8 @@ export default function EWAAccounts() {
                         {building ? (
                           <div>
                             <span className="text-foreground">{building.name}</span>
-                            {(building.buildingNumber ?? building.code) && (
-                              <div className="text-xs text-muted-foreground">Bldg No. {building.buildingNumber ?? building.code}</div>
+                            {building.buildingNumber && (
+                              <div className="text-xs text-muted-foreground">Bldg No. {building.buildingNumber}</div>
                             )}
                           </div>
                         ) : (
@@ -223,6 +190,12 @@ export default function EWAAccounts() {
                       <td className="px-4 py-3">
                         <span className="font-medium">{a.linkedUnitIds.length}</span>
                         <span className="text-xs text-muted-foreground"> ({occupiedCount} occupied)</span>
+                        {unitLabels.length > 0 && (
+                          <div className="mt-0.5 text-xs text-muted-foreground">Units: {unitLabels.join(", ")}</div>
+                        )}
+                        {tenantNames.length > 0 && (
+                          <div className="text-xs text-muted-foreground">Tenants: {tenantNames.join(", ")}</div>
+                        )}
                       </td>
                       <td className="px-4 py-3 text-muted-foreground capitalize">
                         {a.vacantAction}

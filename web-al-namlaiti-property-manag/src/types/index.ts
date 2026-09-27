@@ -150,6 +150,13 @@ export interface Tenant {
   leaseCount: number;
   address?: string;
   notes?: string;
+  /** ID document type (Passport, National ID, Resident Permit, Company CR). */
+  idType?: string;
+  /** ID document expiry date (YYYY-MM-DD). */
+  idExpiry?: string;
+  nationality?: string;
+  /** Date of birth (YYYY-MM-DD). */
+  dateOfBirth?: string;
 }
 
 export interface Lease {

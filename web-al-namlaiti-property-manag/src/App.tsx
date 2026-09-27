@@ -41,6 +41,9 @@ import Vendors from "./pages/Vendors";
 import Assets from "./pages/Assets";
 import Documents from "./pages/Documents";
 import Reports from "./pages/Reports";
+import TenantListReport from "./pages/reports/TenantListReport";
+import LeaseListReport from "./pages/reports/LeaseListReport";
+import PortfolioReport from "./pages/reports/PortfolioReport";
 import Users from "./pages/Users";
 import HistoryPage from "./pages/History";
 import WhatsAppSettings from "./pages/WhatsAppSettings";
@@ -92,6 +95,9 @@ const App = () => (
                 <Route path="assets" element={<Assets />} />
                 <Route path="documents" element={<Documents />} />
                 <Route path="reports" element={<Reports />} />
+                <Route path="reports/tenants" element={<TenantListReport />} />
+                <Route path="reports/leases" element={<LeaseListReport />} />
+                <Route path="reports/portfolio" element={<PortfolioReport />} />
                 <Route path="users" element={<Users />} />
                 <Route path="whatsapp" element={<WhatsAppSettings />} />
                 <Route path="lease-template-calibration" element={<LeaseTemplateCalibration />} />

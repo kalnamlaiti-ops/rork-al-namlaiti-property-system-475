@@ -91,6 +91,46 @@ export default function Reports() {
     <div className="space-y-6">
       <PageHeader title="MIS Reports" subtitle="Management information and portfolio analytics" />
 
+      {/* Reports & Documents */}
+      <div>
+        <h3 className="mb-3 text-base font-semibold">Reports & Documents</h3>
+        <div className="grid gap-4 md:grid-cols-3">
+          <Card className="cursor-pointer transition-shadow hover:shadow-md" onClick={() => navigate("/reports/tenants")}>
+            <CardContent className="flex items-center gap-4 p-5">
+              <div className="rounded-lg bg-indigo-100 p-3 text-indigo-600">
+                <Users className="h-6 w-6" />
+              </div>
+              <div>
+                <p className="font-semibold text-foreground">Full Tenant List</p>
+                <p className="text-sm text-muted-foreground">All tenants — search, filter, print & PDF</p>
+              </div>
+            </CardContent>
+          </Card>
+          <Card className="cursor-pointer transition-shadow hover:shadow-md" onClick={() => navigate("/reports/leases")}>
+            <CardContent className="flex items-center gap-4 p-5">
+              <div className="rounded-lg bg-emerald-100 p-3 text-emerald-600">
+                <FileText className="h-6 w-6" />
+              </div>
+              <div>
+                <p className="font-semibold text-foreground">Full Lease List</p>
+                <p className="text-sm text-muted-foreground">All leases — search, filter, print & PDF</p>
+              </div>
+            </CardContent>
+          </Card>
+          <Card className="cursor-pointer transition-shadow hover:shadow-md" onClick={() => navigate("/reports/portfolio")}>
+            <CardContent className="flex items-center gap-4 p-5">
+              <div className="rounded-lg bg-amber-100 p-3 text-amber-600">
+                <BarChart3 className="h-6 w-6" />
+              </div>
+              <div>
+                <p className="font-semibold text-foreground">Property Management Report</p>
+                <p className="text-sm text-muted-foreground">Portfolio summary with print & PDF</p>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      </div>
+
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <Card>
           <CardContent className="p-5">

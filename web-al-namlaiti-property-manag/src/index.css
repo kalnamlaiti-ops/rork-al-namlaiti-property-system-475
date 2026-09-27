@@ -65,3 +65,36 @@
     text-wrap: balance;
   }
 }
+
+/* ── Report printing ─────────────────────────────────────────────
+   Fallback print path: when the dedicated print pop-up is blocked,
+   window.print() prints ONLY the .report-print-area of the page.
+   Primary path is reportPrint.openReportPrintWindow(). */
+@media print {
+  @page {
+    size: A4 portrait;
+    margin: 12mm;
+  }
+  body {
+    background: #ffffff !important;
+  }
+  body * {
+    visibility: hidden !important;
+  }
+  .report-print-area,
+  .report-print-area * {
+    visibility: visible !important;
+  }
+  .report-print-area {
+    position: absolute !important;
+    left: 0 !important;
+    top: 0 !important;
+    width: 100% !important;
+  }
+  .report-print-area thead {
+    display: table-header-group;
+  }
+  .report-print-area tr {
+    break-inside: avoid;
+  }
+}

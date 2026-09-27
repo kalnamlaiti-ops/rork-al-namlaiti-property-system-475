@@ -6,15 +6,22 @@ import { StatusBadge } from "@/components/StatusBadge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { useData } from "@/context/DataContext";
 import LeaseForm from "@/components/forms/LeaseForm";
-import { ArrowLeft, Pencil, FileText, Home, Calendar, User, Eye, Download, RefreshCw, AlertCircle } from "lucide-react";
+import { ArrowLeft, Pencil, FileText, Home, Calendar, User, Eye, Download, RefreshCw, AlertCircle, Printer, FileDown } from "lucide-react";
 import { format } from "date-fns";
 import { resolveFileUrl } from "@/lib/syncClient";
+import { IndividualReportDialog } from "@/components/reports/IndividualReportDialog";
+import { buildLeaseDetailReport } from "@/lib/reportData";
+import { downloadReportPdf } from "@/lib/reportPdf";
+import type { ReportSection } from "@/lib/reportPdf";
+import { openReportPrintWindow } from "@/lib/reportPrint";
+import { toast } from "sonner";
 
 export default function LeaseDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const { leases, tenants, units, buildings, invoices, payments, documents, getLeaseById, getTenantById, getUnitById, getBuildingById, getLeaseAgreementByLeaseId, getDocumentById, regenerateLeaseAgreement } = useData();
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [reportOpen, setReportOpen] = useState(false);
 
   const lease = id ? getLeaseById(id) : undefined;
   const tenant = lease ? getTenantById(lease.tenantId) : undefined;
@@ -36,15 +43,47 @@ export default function LeaseDetail() {
     );
   }
 
+  const reportTitle = `Lease Report — ${lease.contractNumber}`;
+  const reportFileName = `lease-report-${lease.contractNumber.replace(/\s+/g, "-").toLowerCase()}.pdf`;
+  const report = buildLeaseDetailReport(lease, tenants, units, buildings, invoices, payments);
+  const reportSections: ReportSection[] = [
+    { heading: "Lease Information", info: report.info },
+    { heading: "Invoices", columns: report.invoices.columns, rows: report.invoices.rows, emptyMessage: "No invoices recorded for this lease." },
+    { heading: "Payments", columns: report.payments.columns, rows: report.payments.rows, emptyMessage: "No payments recorded for this lease." },
+    { heading: "Summary", info: report.totals },
+  ];
+
+  const handlePrintReport = () => {
+    const ok = openReportPrintWindow({ title: reportTitle, sections: reportSections });
+    if (!ok) {
+      toast.error("Pop-up blocked — allow pop-ups to print, or use Download PDF.");
+    }
+  };
+
+  const handleDownloadReport = () => {
+    downloadReportPdf({ title: reportTitle, sections: reportSections }, reportFileName);
+  };
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <Button variant="ghost" onClick={() => navigate("/leases")}>
           <ArrowLeft className="mr-2 h-4 w-4" /> Back
         </Button>
-        <Button variant="outline" onClick={() => setDialogOpen(true)}>
-          <Pencil className="mr-2 h-4 w-4" /> Edit
-        </Button>
+        <div className="flex flex-wrap justify-end gap-2">
+          <Button variant="outline" onClick={() => setReportOpen(true)}>
+            <Eye className="mr-2 h-4 w-4" /> View Report
+          </Button>
+          <Button variant="outline" onClick={handlePrintReport}>
+            <Printer className="mr-2 h-4 w-4" /> Print
+          </Button>
+          <Button variant="outline" onClick={handleDownloadReport}>
+            <FileDown className="mr-2 h-4 w-4" /> Download PDF
+          </Button>
+          <Button variant="outline" onClick={() => setDialogOpen(true)}>
+            <Pencil className="mr-2 h-4 w-4" /> Edit
+          </Button>
+        </div>
       </div>
 
       <div className="flex items-center gap-3">
@@ -208,6 +247,15 @@ export default function LeaseDetail() {
           <LeaseForm initialData={lease} onClose={() => setDialogOpen(false)} />
         </DialogContent>
       </Dialog>
+
+      <IndividualReportDialog
+        open={reportOpen}
+        onOpenChange={setReportOpen}
+        title={reportTitle}
+        subtitle="Individual lease report"
+        sections={reportSections}
+        fileName={reportFileName}
+      />
     </div>
   );
 }

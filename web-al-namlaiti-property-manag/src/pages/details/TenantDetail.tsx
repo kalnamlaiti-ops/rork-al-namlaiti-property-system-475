@@ -6,13 +6,20 @@ import { StatusBadge } from "@/components/StatusBadge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { useData } from "@/context/DataContext";
 import TenantForm from "@/components/forms/TenantForm";
-import { ArrowLeft, Pencil, Mail, Phone, FileText, Building2 } from "lucide-react";
+import { IndividualReportDialog } from "@/components/reports/IndividualReportDialog";
+import { buildTenantDetailReport } from "@/lib/reportData";
+import { downloadReportPdf } from "@/lib/reportPdf";
+import type { ReportSection } from "@/lib/reportPdf";
+import { openReportPrintWindow } from "@/lib/reportPrint";
+import { toast } from "sonner";
+import { ArrowLeft, Pencil, Mail, Phone, FileText, Building2, Printer, FileDown, Eye } from "lucide-react";
 
 export default function TenantDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { tenants, leases, units, getTenantById, getUnitById, getBuildingById } = useData();
+  const { tenants, leases, units, buildings, invoices, payments, getTenantById, getUnitById, getBuildingById } = useData();
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [reportOpen, setReportOpen] = useState(false);
 
   const tenant = id ? getTenantById(id) : undefined;
   const tenantLeases = tenant ? leases.filter((l) => l.tenantId === tenant.id) : [];
@@ -28,15 +35,48 @@ export default function TenantDetail() {
     );
   }
 
+  const reportTitle = `Tenant Report — ${tenant.name}`;
+  const reportFileName = `tenant-report-${tenant.name.replace(/\s+/g, "-").toLowerCase()}.pdf`;
+  const report = buildTenantDetailReport(tenant, { tenants, leases, units, buildings }, invoices, payments);
+  const reportSections: ReportSection[] = [
+    { heading: "Tenant Information", info: report.info },
+    { heading: "Lease Information", columns: report.leases.columns, rows: report.leases.rows, emptyMessage: "No leases recorded for this tenant." },
+    { heading: "Invoices", columns: report.invoices.columns, rows: report.invoices.rows, emptyMessage: "No invoices recorded for this tenant." },
+    { heading: "Payments", columns: report.payments.columns, rows: report.payments.rows, emptyMessage: "No payments recorded for this tenant." },
+    { heading: "Financial Summary", info: report.financialTotals },
+  ];
+
+  const handlePrintReport = () => {
+    const ok = openReportPrintWindow({ title: reportTitle, sections: reportSections });
+    if (!ok) {
+      toast.error("Pop-up blocked — allow pop-ups to print, or use Download PDF.");
+    }
+  };
+
+  const handleDownloadReport = () => {
+    downloadReportPdf({ title: reportTitle, sections: reportSections }, reportFileName);
+  };
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <Button variant="ghost" onClick={() => navigate("/tenants")}>
           <ArrowLeft className="mr-2 h-4 w-4" /> Back
         </Button>
-        <Button variant="outline" onClick={() => setDialogOpen(true)}>
-          <Pencil className="mr-2 h-4 w-4" /> Edit
-        </Button>
+        <div className="flex flex-wrap justify-end gap-2">
+          <Button variant="outline" onClick={() => setReportOpen(true)}>
+            <Eye className="mr-2 h-4 w-4" /> View Report
+          </Button>
+          <Button variant="outline" onClick={handlePrintReport}>
+            <Printer className="mr-2 h-4 w-4" /> Print
+          </Button>
+          <Button variant="outline" onClick={handleDownloadReport}>
+            <FileDown className="mr-2 h-4 w-4" /> Download PDF
+          </Button>
+          <Button variant="outline" onClick={() => setDialogOpen(true)}>
+            <Pencil className="mr-2 h-4 w-4" /> Edit
+          </Button>
+        </div>
       </div>
 
       <div className="flex items-center gap-3">
@@ -139,6 +179,15 @@ export default function TenantDetail() {
           <TenantForm initialData={tenant} onClose={() => setDialogOpen(false)} />
         </DialogContent>
       </Dialog>
+
+      <IndividualReportDialog
+        open={reportOpen}
+        onOpenChange={setReportOpen}
+        title={reportTitle}
+        subtitle="Individual tenant report"
+        sections={reportSections}
+        fileName={reportFileName}
+      />
     </div>
   );
 }

@@ -5,7 +5,8 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { useData } from "@/context/DataContext";
 import PaymentForm from "@/components/forms/PaymentForm";
-import { ArrowLeft, Pencil, CheckCircle2, Receipt, Calendar, User, CreditCard } from "lucide-react";
+import PaymentReceiptDialog from "@/components/receipts/PaymentReceiptDialog";
+import { ArrowLeft, Pencil, CheckCircle2, Receipt, ReceiptText, Calendar, User, CreditCard } from "lucide-react";
 import { format } from "date-fns";
 
 function formatCurrency(amount: number) {
@@ -15,11 +16,13 @@ function formatCurrency(amount: number) {
 export default function PaymentDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { payments, invoices } = useData();
+  const { payments, invoices, getTenantById } = useData();
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [receiptOpen, setReceiptOpen] = useState(false);
 
   const payment = id ? payments.find((p) => p.id === id) : undefined;
   const invoice = payment ? invoices.find((i) => i.id === payment.invoiceId) : undefined;
+  const tenant = payment ? getTenantById(payment.tenantId) : undefined;
 
   if (!payment) {
     return (
@@ -38,9 +41,14 @@ export default function PaymentDetail() {
         <Button variant="ghost" onClick={() => navigate("/payments")}>
           <ArrowLeft className="mr-2 h-4 w-4" /> Back
         </Button>
-        <Button variant="outline" onClick={() => setDialogOpen(true)}>
-          <Pencil className="mr-2 h-4 w-4" /> Edit
-        </Button>
+        <div className="flex gap-2">
+          <Button variant="outline" onClick={() => setReceiptOpen(true)}>
+            <ReceiptText className="mr-2 h-4 w-4" /> View Receipt
+          </Button>
+          <Button variant="outline" onClick={() => setDialogOpen(true)}>
+            <Pencil className="mr-2 h-4 w-4" /> Edit
+          </Button>
+        </div>
       </div>
 
       <Card className="mx-auto max-w-2xl">
@@ -66,7 +74,10 @@ export default function PaymentDetail() {
             </div>
             <div>
               <p className="text-sm text-muted-foreground">Tenant</p>
-              <p className="font-medium flex items-center gap-2"><User className="h-4 w-4" /> {payment.tenantId}</p>
+              <p className="font-medium flex items-center gap-2">
+                <User className="h-4 w-4" /> {tenant?.name ?? payment.tenantId}
+                {tenant?.phone ? <span className="text-xs text-muted-foreground">· {tenant.phone}</span> : null}
+              </p>
             </div>
             <div>
               <p className="text-sm text-muted-foreground">Invoice</p>
@@ -92,6 +103,8 @@ export default function PaymentDetail() {
           </div>
         </CardContent>
       </Card>
+
+      <PaymentReceiptDialog payment={payment} open={receiptOpen} onOpenChange={setReceiptOpen} />
 
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
         <DialogContent className="max-h-[90vh] max-w-2xl overflow-y-auto">

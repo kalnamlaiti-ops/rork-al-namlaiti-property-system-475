@@ -218,6 +218,68 @@ export async function sendInvoiceWhatsApp(
 }
 
 /**
+ * Send a WhatsApp message with a document attachment via the Cloud API.
+ * Used for invoices AND payment receipts. Retry logic: up to 3 attempts.
+ * Only returns success:true when the backend confirms the send.
+ */
+export async function sendDocumentWhatsApp(params: {
+  to: string;
+  body: string;
+  fileName: string;
+  pdfBase64: string;
+}): Promise<SendWhatsAppResult> {
+  const { to, body, fileName, pdfBase64 } = params;
+
+  const phoneNumber = normalizePhoneNumber(to);
+  if (phoneNumber.length < 8) {
+    return { success: false, message: `Invalid phone number: ${to}` };
+  }
+
+  if (!FUNCTIONS_URL) {
+    console.warn("[whatsapp] No backend URL configured — message not sent");
+    return { success: false, message: "WhatsApp backend not configured" };
+  }
+
+  const maxRetries = 3;
+  let lastError = "";
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const res = await fetch(`${FUNCTIONS_URL}/api/whatsapp/send`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          to: phoneNumber,
+          body,
+          attachmentName: fileName,
+          attachmentBase64: pdfBase64,
+        }),
+      });
+
+      const data = (await res.json()) as {
+        ok: boolean;
+        messageId?: string;
+        error?: string;
+      };
+
+      if (data.ok) {
+        return { success: true, message: "WhatsApp message sent successfully", messageId: data.messageId };
+      }
+
+      lastError = data.error ?? "Unknown error";
+      console.warn(`[whatsapp] attempt ${attempt} failed: ${lastError}`);
+      if (attempt < maxRetries) await sleep(Math.pow(2, attempt) * 1000);
+    } catch (err) {
+      lastError = err instanceof Error ? err.message : "Network error";
+      console.warn(`[whatsapp] attempt ${attempt} network error: ${lastError}`);
+      if (attempt < maxRetries) await sleep(Math.pow(2, attempt) * 1000);
+    }
+  }
+
+  return { success: false, message: `WhatsApp send failed after ${maxRetries} attempts: ${lastError}` };
+}
+
+/**
  * Check whether a WhatsApp message has already been sent for a given
  * tenant + billing month. Used for duplicate prevention.
  */

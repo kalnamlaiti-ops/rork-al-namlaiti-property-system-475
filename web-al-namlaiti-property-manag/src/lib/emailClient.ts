@@ -124,6 +124,54 @@ ${ctx.companyPhone}`;
   }
 }
 
+/**
+ * Send an email with an optional PDF attachment via the Gmail API endpoint.
+ * Used for invoices AND payment receipts. Only returns success:true when the
+ * backend confirms the send.
+ */
+export async function sendEmailWithAttachment(params: {
+  to: string;
+  subject: string;
+  body: string;
+  fileName?: string;
+  pdfBase64?: string;
+}): Promise<SendInvoiceEmailResult> {
+  const { to, subject, body, fileName, pdfBase64 } = params;
+
+  if (!to) {
+    return { success: false, message: "No email address" };
+  }
+
+  if (!FUNCTIONS_URL) {
+    console.warn("[email] No backend URL configured — email not sent");
+    return { success: false, message: "Email backend not configured" };
+  }
+
+  try {
+    const res = await fetch(`${FUNCTIONS_URL}/api/send-invoice`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        to,
+        subject,
+        body,
+        attachmentName: fileName,
+        attachmentBase64: pdfBase64,
+      }),
+    });
+
+    if (!res.ok) {
+      const text = await res.text().catch(() => "Unknown error");
+      return { success: false, message: `Email send failed: ${text}` };
+    }
+
+    return { success: true, message: "Email sent successfully" };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Network error";
+    return { success: false, message: `Email send failed: ${msg}` };
+  }
+}
+
 function formatDate(iso: string): string {
   if (!iso) return "—";
   return new Date(iso).toLocaleDateString("en-GB", {

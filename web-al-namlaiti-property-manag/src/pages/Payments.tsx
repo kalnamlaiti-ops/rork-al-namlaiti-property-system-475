@@ -7,8 +7,9 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { useData } from "@/context/DataContext";
 import PaymentForm from "@/components/forms/PaymentForm";
+import PaymentReceiptDialog from "@/components/receipts/PaymentReceiptDialog";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
-import { Search, Pencil, Wallet, Calendar, Banknote, Landmark, Trash2 } from "lucide-react";
+import { Search, Pencil, Wallet, Calendar, Banknote, Landmark, Trash2, ReceiptText } from "lucide-react";
 import { format, isSameMonth, parseISO } from "date-fns";
 import type { Payment } from "@/types";
 
@@ -25,6 +26,7 @@ export default function Payments() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingPayment, setEditingPayment] = useState<Payment | undefined>();
   const [deletingPayment, setDeletingPayment] = useState<Payment | undefined>();
+  const [receiptPayment, setReceiptPayment] = useState<Payment | undefined>();
 
   const totalPayments = payments.reduce((sum, p) => sum + p.amount, 0);
   const thisMonthTotal = payments
@@ -178,6 +180,9 @@ export default function Payments() {
                       <td className="px-4 py-3 font-medium text-emerald-600">{formatCurrency(p.amount)}</td>
                       <td className="px-4 py-3 text-right">
                         <div className="flex justify-end gap-2">
+                          <Button variant="ghost" size="sm" onClick={() => setReceiptPayment(p)}>
+                            <ReceiptText className="mr-1 h-3.5 w-3.5" /> Receipt
+                          </Button>
                           <Button variant="ghost" size="sm" onClick={() => navigate(`/payments/${p.id}`)}>
                             View
                           </Button>
@@ -204,6 +209,14 @@ export default function Payments() {
         itemName={deletingPayment?.receiptNumber}
         onConfirm={() => deletingPayment && deletePayment(deletingPayment.id)}
       />
+
+      {receiptPayment && (
+        <PaymentReceiptDialog
+          payment={receiptPayment}
+          open={Boolean(receiptPayment)}
+          onOpenChange={(o) => !o && setReceiptPayment(undefined)}
+        />
+      )}
 
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
         <DialogContent className="max-h-[90vh] max-w-2xl overflow-y-auto">

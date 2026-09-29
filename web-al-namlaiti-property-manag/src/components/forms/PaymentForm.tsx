@@ -3,7 +3,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { useData, generateCode } from "@/context/DataContext";
+import { useData } from "@/context/DataContext";
 import type { Payment } from "@/types";
 
 interface PaymentFormProps {
@@ -31,6 +31,20 @@ export default function PaymentForm({ initialData, preselectedInvoiceId, onClose
 
   const [errors, setErrors] = useState<Record<string, string>>({});
 
+  // Unique receipt number — RCP-<year>-<6 digits>, checked against every
+  // existing payment so numbers are never duplicated.
+  const generateUniqueReceiptNumber = () => {
+    const year = new Date().getFullYear();
+    const existing = new Set(payments.map((p) => p.receiptNumber));
+    let n = payments.length + 1;
+    let candidate = `RCP-${year}-${String(n).padStart(6, "0")}`;
+    while (existing.has(candidate)) {
+      n += 1;
+      candidate = `RCP-${year}-${String(n).padStart(6, "0")}`;
+    }
+    return candidate;
+  };
+
   const selectedInvoice = invoices.find((i) => i.id === form.invoiceId);
   const tenant = selectedInvoice ? getTenantById(selectedInvoice.tenantId) : undefined;
 
@@ -55,7 +69,7 @@ export default function PaymentForm({ initialData, preselectedInvoiceId, onClose
     e.preventDefault();
     if (!validate() || !selectedInvoice || !tenant) return;
 
-    const receiptNumber = initialData?.receiptNumber ?? generateCode("RCP", payments.length);
+    const receiptNumber = initialData?.receiptNumber ?? generateUniqueReceiptNumber();
 
     const payload = {
       receiptNumber,

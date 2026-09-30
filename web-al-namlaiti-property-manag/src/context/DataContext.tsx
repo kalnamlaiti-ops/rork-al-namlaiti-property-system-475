@@ -16,7 +16,6 @@ import type {
   HistoryAction,
   HistoryEntry,
   Invoice,
-  InvoiceStatus,
   JournalEntry,
   Lease,
   LeaseAgreement,
@@ -724,21 +723,6 @@ export const [DataProvider, useData] = createContextHook(() => {
         return prev;
       });
       sendUpdate("tenants", id, updates as unknown as Record<string, unknown>);
-      // ── Invalidate stored lease agreements embedding this tenant's details ──
-      // The agreement PDF is a generated snapshot; when the tenant's name,
-      // phone, or CPR changes, existing "Generated" agreements are flagged so
-      // stale copies are never silently served.
-      if (["name", "phone", "crNumber"].some((f) => f in updates)) {
-        for (const l of data.leases) {
-          if (l.tenantId !== id) continue;
-          const agreement = data.leaseAgreements.find((a) => a.leaseId === l.id);
-          if (agreement && agreement.status === "Generated") {
-            sendUpdate("leaseAgreements", agreement.id, {
-              status: "Needs Regeneration",
-            } as unknown as Record<string, unknown>);
-          }
-        }
-      }
       pushHistory({
         action: "Edited",
         entityType: "Tenant",
@@ -749,7 +733,7 @@ export const [DataProvider, useData] = createContextHook(() => {
       });
       toast.success("Tenant updated");
     },
-    [sendUpdate, pushHistory, data.leases, data.leaseAgreements],
+    [sendUpdate, pushHistory],
   );
 
   const deleteTenant = useCallback(
@@ -882,20 +866,6 @@ export const [DataProvider, useData] = createContextHook(() => {
       toast.info("Regenerating lease agreement...");
     },
     [persistLeaseAgreement],
-  );
-
-  /**
-   * Generate the lease agreement PDF fresh from the CURRENT records
-   * (read-only — nothing is persisted). Used by View/Download so a stored
-   * snapshot is never served after the underlying data changed.
-   */
-  const generateLeaseAgreementDoc = useCallback(
-    async (lease: Lease) => {
-      const ctx = buildLeaseAgreementContext(lease);
-      if (!ctx) throw new Error("Missing tenant, unit, or building data for this lease");
-      return generateLeaseAgreementPdf(ctx, fieldConfigs);
-    },
-    [buildLeaseAgreementContext, fieldConfigs],
   );
 
   const addLease = useCallback(
@@ -1134,70 +1104,14 @@ export const [DataProvider, useData] = createContextHook(() => {
     (id: string, updates: Partial<Payment>) => {
       let changes: { field: string; from: string; to: string }[] = [];
       let name = "Payment";
-      // ── Invoice re-cascade ──
-      // Editing a payment must flow into the linked invoice's balance/status
-      // (and any invoice it moved to/from) so the portfolio report, rent roll
-      // and invoice PDFs always read current values.
-      const existing = data.payments.find((p) => p.id === id);
-      if (existing) {
+      setData((prev) => {
+        const existing = prev.payments.find((p) => p.id === id);
+        if (!existing) return prev;
         name = existing.receiptNumber;
         changes = diffChanges(existing as unknown as Record<string, unknown>, updates as Record<string, unknown>);
-      }
-      const affectedInvoices = new Set<string>();
-      if (existing?.invoiceId) affectedInvoices.add(existing.invoiceId);
-      if (updates.invoiceId) affectedInvoices.add(updates.invoiceId);
-      const targetInvoiceId = updates.invoiceId ?? existing?.invoiceId;
-      const invoicePatches: { id: string; balance: number; status: InvoiceStatus; fullyPaid: boolean; invoiceNumber: string; ewaBillIds: string[]; expenseIds: string[] }[] = [];
-      for (const invoiceId of affectedInvoices) {
-        const invoice = data.invoices.find((i) => i.id === invoiceId);
-        if (!invoice || invoice.status === "Cancelled") continue;
-        const paid = data.payments
-          .filter((p) => p.invoiceId === invoiceId)
-          .reduce((sum, p) => {
-            if (p.id !== id) return sum + (p.amount || 0);
-            // This payment counts toward its target invoice at its new amount;
-            // if it moved away, it contributes nothing to the old invoice.
-            return sum + (invoiceId === targetInvoiceId ? (updates.amount ?? p.amount ?? 0) : 0);
-          }, 0);
-        const balance = Math.max(0, invoice.amount - paid);
-        const status: InvoiceStatus =
-          balance === 0
-            ? "Paid"
-            : paid > 0
-              ? "Partial"
-              : invoice.status === "Paid" || invoice.status === "Partial"
-                ? "Sent"
-                : invoice.status;
-        invoicePatches.push({
-          id: invoice.id,
-          balance,
-          status,
-          fullyPaid: balance === 0,
-          invoiceNumber: invoice.invoiceNumber,
-          ewaBillIds: invoice.ewaBillIds ?? [],
-          expenseIds: invoice.expenseIds ?? [],
-        });
-      }
+        return prev;
+      });
       sendUpdate("payments", id, updates as unknown as Record<string, unknown>);
-      for (const inv of invoicePatches) {
-        sendUpdate("invoices", inv.id, { balance: inv.balance, status: inv.status } as unknown as Record<string, unknown>);
-        // Mirror paymentCascade: fully paid → linked charges marked paid.
-        if (inv.fullyPaid) {
-          for (const ewaId of inv.ewaBillIds) {
-            sendUpdate("ewaBills", ewaId, { status: "Paid" } as unknown as Record<string, unknown>);
-          }
-          for (const expId of inv.expenseIds) {
-            sendUpdate("expenses", expId, { status: "Paid" } as unknown as Record<string, unknown>);
-          }
-        }
-        pushHistory({
-          action: "Edited" as HistoryAction,
-          entityType: "Invoice",
-          entityId: inv.id,
-          entityName: inv.invoiceNumber,
-          summary: `Invoice ${inv.invoiceNumber} balance updated to ${inv.balance.toFixed(3)} after payment "${name}" edit`,
-        });
-      }
       pushHistory({
         action: "Edited",
         entityType: "Payment",
@@ -1208,7 +1122,7 @@ export const [DataProvider, useData] = createContextHook(() => {
       });
       toast.success("Payment updated");
     },
-    [sendUpdate, pushHistory, data.payments, data.invoices],
+    [sendUpdate, pushHistory],
   );
 
   const deletePayment = useCallback(
@@ -3048,7 +2962,6 @@ export const [DataProvider, useData] = createContextHook(() => {
     getLeaseAgreementById,
     getLeaseAgreementByLeaseId,
     regenerateLeaseAgreement,
-    generateLeaseAgreementDoc,
     clearHistory,
     recoverEntity,
     // Automated invoicing

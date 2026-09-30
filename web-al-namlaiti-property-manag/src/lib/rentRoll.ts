@@ -147,9 +147,7 @@ export function buildRentRoll(args: {
       srNo,
       tenantName: tenant?.name ?? lease.phoneNumber ?? "—",
       spec,
-      // Live tenant record first — the lease's copied phoneNumber is a legacy
-      // snapshot made at lease creation and must never shadow the current tenant.
-      contact: tenant?.phone || lease.phoneNumber || "—",
+      contact: lease.phoneNumber || tenant?.phone || "—",
       unit: unit.unitNumber,
       rent: money(lease.monthlyRent || 0),
       collected: money(collected),

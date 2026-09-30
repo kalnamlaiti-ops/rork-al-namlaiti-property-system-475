@@ -214,6 +214,36 @@ export function paymentCascade(
   return { updates, journalEntry };
 }
 
+// ──────────────────────────── Invoice rebalance ────────────────────────────
+
+/**
+ * Recompute an invoice's balance & status from ALL of its payment records.
+ * The payment records are the source of truth, so the result stays correct
+ * after payments are added, edited, or deleted (no incremental drift).
+ * Returns undefined for cancelled invoices — they are never auto-reopened.
+ */
+export function recomputeInvoiceFromPayments(
+  invoice: Invoice,
+  payments: Payment[],
+): { balance: number; status: Invoice["status"] } | undefined {
+  if (invoice.status === "Cancelled") return undefined;
+  const paid = payments
+    .filter((p) => p.invoiceId === invoice.id)
+    .reduce((s, p) => s + (p.amount || 0), 0);
+  const balance = Math.max(0, (invoice.amount || 0) - paid);
+  let status: Invoice["status"];
+  if (paid <= 0) {
+    // Nothing paid (any more): reopen Paid/Partial invoices back to Sent;
+    // leave Draft/Sent/Overdue as they are.
+    status = invoice.status === "Paid" || invoice.status === "Partial" ? "Sent" : invoice.status;
+  } else if (balance <= 0) {
+    status = "Paid";
+  } else {
+    status = "Partial";
+  }
+  return { balance, status };
+}
+
 // ──────────────────────────── Duplicate prevention ────────────────────────────
 
 /**

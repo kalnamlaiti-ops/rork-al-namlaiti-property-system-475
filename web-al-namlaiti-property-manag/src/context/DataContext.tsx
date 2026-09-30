@@ -56,7 +56,7 @@ import {
   normalizePhoneNumber,
 } from "@/lib/whatsappClient";
 import type { PdfContext } from "@/lib/pdfGenerator";
-import { leaseCascade, invoiceCascade, paymentCascade } from "@/lib/automation";
+import { leaseCascade, invoiceCascade, paymentCascade, recomputeInvoiceFromPayments } from "@/lib/automation";
 import { computeAllocation, validateLinkedUnits, validatePercentageRules } from "@/lib/ewaAllocation";
 import {
   generateLeaseAgreementPdf,
@@ -1104,20 +1104,42 @@ export const [DataProvider, useData] = createContextHook(() => {
     (id: string, updates: Partial<Payment>) => {
       let changes: { field: string; from: string; to: string }[] = [];
       let name = "Payment";
+      // Invoices whose balance must be recomputed after this edit: changing a
+      // payment's amount (or moving it to another invoice) must flow into the
+      // invoice balance immediately, otherwise reports keep showing stale
+      // outstanding values. Source of truth = the current payment records.
+      const rebalance = new Map<string, { balance: number; status: Invoice["status"] }>();
       setData((prev) => {
         const existing = prev.payments.find((p) => p.id === id);
         if (!existing) return prev;
         name = existing.receiptNumber;
         changes = diffChanges(existing as unknown as Record<string, unknown>, updates as Record<string, unknown>);
+        if (updates.amount !== undefined || updates.invoiceId !== undefined) {
+          const merged: Payment = { ...existing, ...updates, id };
+          const affected = new Set<string>();
+          if (existing.invoiceId) affected.add(existing.invoiceId);
+          if (merged.invoiceId) affected.add(merged.invoiceId);
+          for (const invId of affected) {
+            const invoice = prev.invoices.find((i) => i.id === invId);
+            if (!invoice) continue;
+            const others = prev.payments.filter((p) => p.invoiceId === invId && p.id !== id);
+            const paymentsFor = invId === merged.invoiceId ? [...others, merged] : others;
+            const result = recomputeInvoiceFromPayments(invoice, paymentsFor);
+            if (result) rebalance.set(invId, result);
+          }
+        }
         return prev;
       });
       sendUpdate("payments", id, updates as unknown as Record<string, unknown>);
+      for (const [invId, result] of rebalance) {
+        sendUpdate("invoices", invId, result as unknown as Record<string, unknown>);
+      }
       pushHistory({
         action: "Edited",
         entityType: "Payment",
         entityId: id,
         entityName: name,
-        summary: `Payment "${name}" edited (${changes.length} field${changes.length === 1 ? "" : "s"} changed)`,
+        summary: `Payment "${name}" edited (${changes.length} field${changes.length === 1 ? "" : "s"} changed)${rebalance.size > 0 ? " — invoice balance(s) recalculated" : ""}`,
         changes,
       });
       toast.success("Payment updated");
@@ -1129,23 +1151,46 @@ export const [DataProvider, useData] = createContextHook(() => {
     (id: string) => {
       let name = "Payment";
       let snapshot: Payment | undefined;
+      let rebalanceInvoiceId: string | undefined;
+      let rebalance: { balance: number; status: Invoice["status"] } | undefined;
       setData((prev) => {
         const existing = prev.payments.find((p) => p.id === id);
-        if (existing) { name = existing.receiptNumber; snapshot = existing; }
+        if (existing) {
+          name = existing.receiptNumber;
+          snapshot = existing;
+          // Removing a payment changes the invoice balance — recompute it so
+          // outstanding values in reports stay correct.
+          if (existing.invoiceId) {
+            const invoice = prev.invoices.find((i) => i.id === existing.invoiceId);
+            if (invoice) {
+              const result = recomputeInvoiceFromPayments(
+                invoice,
+                prev.payments.filter((p) => p.id !== id),
+              );
+              if (result) {
+                rebalance = result;
+                rebalanceInvoiceId = invoice.id;
+              }
+            }
+          }
+        }
         return prev;
       });
       sendDelete("payments", id, snapshot as unknown as Record<string, unknown>);
+      if (rebalanceInvoiceId && rebalance) {
+        sendUpdate("invoices", rebalanceInvoiceId, rebalance as unknown as Record<string, unknown>);
+      }
       pushHistory({
         action: "Deleted",
         entityType: "Payment",
         entityId: id,
         entityName: name,
-        summary: `Payment "${name}" deleted`,
+        summary: `Payment "${name}" deleted${rebalanceInvoiceId ? " — invoice balance recalculated" : ""}`,
         snapshot,
       });
       toast.success("Payment deleted");
     },
-    [sendDelete, pushHistory],
+    [sendDelete, sendUpdate, pushHistory],
   );
 
   // ────────────────────────────── Expenses ──────────────────────────────

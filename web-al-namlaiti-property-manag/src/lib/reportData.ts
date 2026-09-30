@@ -124,8 +124,11 @@ export function buildLeaseReportRows(
     return {
       contractNumber: l.contractNumber || "—",
       tenantName: tenant?.name ?? "—",
-      tenantPhone: l.phoneNumber || tenant?.phone || "—",
-      cpr: l.cprNumber || tenant?.crNumber || "—",
+      // Phone/CPR resolve from the CURRENT tenant record — the lease's stored
+      // copy is only a fallback for records without a linked tenant, so edits
+      // to a tenant always flow into this report.
+      tenantPhone: tenant?.phone || l.phoneNumber || "—",
+      cpr: tenant?.crNumber || l.cprNumber || "—",
       building: building?.name ?? (l.buildingNumber ? `Building ${l.buildingNumber}` : "—"),
       unit: unit?.unitNumber ?? "—",
       road: l.road || building?.address || "—",
@@ -344,9 +347,10 @@ export function buildLeaseDetailReport(
 
   const info: [string, string][] = [
     ["Contract Number", lease.contractNumber || "—"],
-    ["Tenant", tenant?.name ?? "—"],
-    ["Tenant Phone", lease.phoneNumber || tenant?.phone || "—"],
-    ["CPR Number", lease.cprNumber || tenant?.crNumber || "—"],
+    ["Tenant Name", tenant?.name ?? "—"],
+    // Current tenant record first — lease copy is a fallback only.
+    ["Tenant Phone", tenant?.phone || lease.phoneNumber || "—"],
+    ["CPR Number", tenant?.crNumber || lease.cprNumber || "—"],
     ["Building", building?.name ?? (lease.buildingNumber ? `Building ${lease.buildingNumber}` : "—")],
     ["Unit", unit?.unitNumber ?? "—"],
     ["Road", lease.road || "—"],

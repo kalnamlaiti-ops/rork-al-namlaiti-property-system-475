@@ -290,8 +290,10 @@ export async function generateLeaseAgreementPdf(
     end_date: formatAgreementDate(lease.endDate),
     rent_amount: formatAgreementRent(lease.monthlyRent),
     // CPR and phone are rendered with fixed prefixes on the agreement.
-    cpr_number: lease.cprNumber ? `CPR: ${lease.cprNumber}` : "",
-    phone_number: lease.phoneNumber ? `Ph#: ${lease.phoneNumber}` : "",
+    // They resolve from the CURRENT tenant record — the lease's stored copy is
+    // only a fallback, so tenant edits flow into freshly generated agreements.
+    cpr_number: tenant.crNumber || lease.cprNumber ? `CPR: ${tenant.crNumber || lease.cprNumber}` : "",
+    phone_number: tenant.phone || lease.phoneNumber ? `Ph#: ${tenant.phone || lease.phoneNumber}` : "",
   };
 
   for (const key of ALL_FIELD_KEYS) {

@@ -147,7 +147,10 @@ export function buildRentRoll(args: {
       srNo,
       tenantName: tenant?.name ?? lease.phoneNumber ?? "—",
       spec,
-      contact: lease.phoneNumber || tenant?.phone || "—",
+      // Contact resolves from the CURRENT tenant record — the lease's stored
+      // copy is only a fallback when no tenant is linked, so tenant edits
+      // always appear in the rent roll.
+      contact: tenant?.phone || lease.phoneNumber || "—",
       unit: unit.unitNumber,
       rent: money(lease.monthlyRent || 0),
       collected: money(collected),

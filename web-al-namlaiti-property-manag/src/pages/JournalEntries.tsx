@@ -16,6 +16,11 @@ function formatCurrency(amount: number) {
   return new Intl.NumberFormat("en-BH", { style: "currency", currency: "BHD", maximumFractionDigits: 0 }).format(amount);
 }
 
+/** Creation millisecond embedded in ids like "je-1790768777618-zlchg". */
+function idTimestamp(id: string): number {
+  return Number(id.split("-")[1]) || 0;
+}
+
 export default function JournalEntries() {
   const navigate = useNavigate();
   const { journalEntries, chartOfAccounts, deleteJournalEntry } = useData();
@@ -25,10 +30,18 @@ export default function JournalEntries() {
   const [deletingEntry, setDeletingEntry] = useState<JournalEntry | undefined>();
 
   const filtered = useMemo(() => {
-    return journalEntries.filter((j) =>
-      j.entryNumber.toLowerCase().includes(search.toLowerCase()) ||
-      j.description.toLowerCase().includes(search.toLowerCase())
-    );
+    return journalEntries
+      .filter(
+        (j) =>
+          j.entryNumber.toLowerCase().includes(search.toLowerCase()) ||
+          j.description.toLowerCase().includes(search.toLowerCase())
+      )
+      // Newest first: official transaction date DESC, then creation order DESC
+      // (ids embed the creation timestamp, e.g. "je-1790768777618-zlchg").
+      .sort((a, b) => {
+        if (a.date !== b.date) return a.date < b.date ? 1 : -1;
+        return idTimestamp(b.id) - idTimestamp(a.id);
+      });
   }, [search, journalEntries]);
 
   const openAdd = () => {

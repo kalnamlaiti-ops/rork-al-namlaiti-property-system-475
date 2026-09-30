@@ -146,17 +146,22 @@ export default function HistoryPage() {
   }, [history]);
 
   const filtered = useMemo(() => {
-    return history.filter((h) => {
-      if (actionFilter !== "all" && h.action !== actionFilter) return false;
-      if (entityFilter !== "all" && h.entityType !== entityFilter) return false;
-      const q = search.toLowerCase().trim();
-      if (!q) return true;
-      return (
-        h.entityName.toLowerCase().includes(q) ||
-        h.entityType.toLowerCase().includes(q) ||
-        h.summary.toLowerCase().includes(q)
+    return history
+      .filter((h) => {
+        if (actionFilter !== "all" && h.action !== actionFilter) return false;
+        if (entityFilter !== "all" && h.entityType !== entityFilter) return false;
+        const q = search.toLowerCase().trim();
+        if (!q) return true;
+        return (
+          h.entityName.toLowerCase().includes(q) ||
+          h.entityType.toLowerCase().includes(q) ||
+          h.summary.toLowerCase().includes(q)
+        );
+      })
+      // Newest first (ORDER BY timestamp DESC).
+      .sort(
+        (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
       );
-    });
   }, [history, search, actionFilter, entityFilter]);
 
   const counts = useMemo(() => {

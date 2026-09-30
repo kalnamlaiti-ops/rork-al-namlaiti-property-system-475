@@ -17,7 +17,6 @@ import {
   Download,
   Eye,
   CheckCircle,
-  Zap,
   Mail,
   MessageCircle,
   Loader2,
@@ -25,7 +24,6 @@ import {
 import { format } from "date-fns";
 import type { Invoice } from "@/types";
 import { downloadInvoicePdf } from "@/lib/pdfGenerator";
-import { toPeriodKey } from "@/lib/invoiceGenerator";
 
 function formatCurrency(amount: number) {
   return new Intl.NumberFormat("en-BH", { style: "currency", currency: "BHD", maximumFractionDigits: 0 }).format(amount);
@@ -41,7 +39,6 @@ export default function Invoices() {
     getUnitById,
     getBuildingById,
     deleteInvoice,
-    generateMonthlyInvoices,
     sendInvoice,
     sendAllInvoices,
     sendInvoiceWhatsAppMessage,
@@ -60,7 +57,6 @@ export default function Invoices() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingInvoice, setEditingInvoice] = useState<Invoice | undefined>();
   const [deletingInvoice, setDeletingInvoice] = useState<Invoice | undefined>();
-  const [generating, setGenerating] = useState(false);
   const [sendingAll, setSendingAll] = useState(false);
   const [busyInvoiceId, setBusyInvoiceId] = useState<string | null>(null);
   const [busyWhatsAppId, setBusyWhatsAppId] = useState<string | null>(null);
@@ -102,15 +98,6 @@ export default function Invoices() {
   const closeDialog = () => {
     setDialogOpen(false);
     setEditingInvoice(undefined);
-  };
-
-  const handleGenerate = async () => {
-    setGenerating(true);
-    try {
-      await generateMonthlyInvoices(toPeriodKey(new Date()));
-    } finally {
-      setGenerating(false);
-    }
   };
 
   const handleSendAll = async () => {
@@ -183,10 +170,6 @@ export default function Invoices() {
 
       {/* Automation toolbar */}
       <div className="flex flex-wrap gap-3">
-        <Button onClick={handleGenerate} disabled={generating} variant="default">
-          {generating ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Zap className="mr-2 h-4 w-4" />}
-          {generating ? "Generating..." : "Generate Monthly Invoices"}
-        </Button>
         <Button onClick={handleSendAll} disabled={sendingAll} variant="outline">
           {sendingAll ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Mail className="mr-2 h-4 w-4" />}
           {sendingAll ? "Sending..." : "Send All Drafts"}
@@ -297,7 +280,7 @@ export default function Invoices() {
               {filtered.length === 0 ? (
                 <tr>
                   <td colSpan={9} className="px-4 py-8 text-center text-muted-foreground">
-                    No invoices found. Click "Generate Monthly Invoices" to auto-create them.
+                    No invoices found. Use "Create Invoice" to add one.
                   </td>
                 </tr>
               ) : (

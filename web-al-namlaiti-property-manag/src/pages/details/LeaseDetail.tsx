@@ -8,7 +8,6 @@ import { useData } from "@/context/DataContext";
 import LeaseForm from "@/components/forms/LeaseForm";
 import { ArrowLeft, Pencil, FileText, Home, Calendar, User, Eye, Download, RefreshCw, AlertCircle, Printer, FileDown } from "lucide-react";
 import { format } from "date-fns";
-import { resolveFileUrl } from "@/lib/syncClient";
 import { IndividualReportDialog } from "@/components/reports/IndividualReportDialog";
 import { buildLeaseDetailReport } from "@/lib/reportData";
 import { downloadReportPdf } from "@/lib/reportPdf";
@@ -19,7 +18,7 @@ import { toast } from "sonner";
 export default function LeaseDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { leases, tenants, units, buildings, invoices, payments, documents, getLeaseById, getTenantById, getUnitById, getBuildingById, getLeaseAgreementByLeaseId, getDocumentById, regenerateLeaseAgreement } = useData();
+  const { leases, tenants, units, buildings, invoices, payments, getLeaseById, getTenantById, getUnitById, getBuildingById, getLeaseAgreementByLeaseId, generateLeaseAgreementDoc, regenerateLeaseAgreement } = useData();
   const [dialogOpen, setDialogOpen] = useState(false);
   const [reportOpen, setReportOpen] = useState(false);
 
@@ -30,7 +29,6 @@ export default function LeaseDetail() {
   const leaseInvoices = lease ? invoices.filter((i) => i.leaseId === lease.id) : [];
   const leasePayments = lease ? payments.filter((p) => p.invoiceId && leaseInvoices.some((i) => i.id === p.invoiceId)) : [];
   const agreement = lease ? getLeaseAgreementByLeaseId(lease.id) : undefined;
-  const agreementDoc = agreement?.documentId ? getDocumentById(agreement.documentId) : undefined;
 
   if (!lease) {
     return (
@@ -62,6 +60,27 @@ export default function LeaseDetail() {
 
   const handleDownloadReport = () => {
     downloadReportPdf({ title: reportTitle, sections: reportSections }, reportFileName);
+  };
+
+  // Lease agreement PDFs must always be generated from the CURRENT records —
+  // the previously stored document is an archived snapshot and is never served.
+  const openFreshAgreement = async (mode: "view" | "download") => {
+    if (!lease) return;
+    try {
+      const doc = await generateLeaseAgreementDoc(lease);
+      if (mode === "view") {
+        window.open(doc.output("bloburl") as unknown as string, "_blank");
+      } else {
+        doc.save(`${lease.contractNumber}-Lease-Agreement.pdf`);
+      }
+    } catch (err) {
+      const message = Array.isArray(err)
+        ? (err as { message?: string }[]).map((e) => e.message ?? "missing field").join("; ")
+        : err instanceof Error
+          ? err.message
+          : "Generation failed";
+      toast.error(`Could not generate lease agreement: ${message}`);
+    }
   };
 
   return (
@@ -166,31 +185,10 @@ export default function LeaseDetail() {
                 )}
               </div>
               <div className="flex flex-wrap gap-3">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={agreement.status !== "Generated" || !agreementDoc?.fileUrl}
-                  onClick={() => {
-                    const url = resolveFileUrl(agreementDoc?.fileUrl);
-                    if (url) window.open(url, "_blank");
-                  }}
-                >
+                <Button variant="outline" size="sm" onClick={() => void openFreshAgreement("view")}>
                   <Eye className="mr-2 h-4 w-4" /> View
                 </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={agreement.status !== "Generated" || !agreementDoc?.fileUrl}
-                  onClick={() => {
-                    const url = resolveFileUrl(agreementDoc?.fileUrl);
-                    if (url) {
-                      const link = document.createElement("a");
-                      link.href = url;
-                      link.download = `${lease.contractNumber}-Lease-Agreement.pdf`;
-                      link.click();
-                    }
-                  }}
-                >
+                <Button variant="outline" size="sm" onClick={() => void openFreshAgreement("download")}>
                   <Download className="mr-2 h-4 w-4" /> Download PDF
                 </Button>
                 <Button variant="outline" size="sm" onClick={() => lease && regenerateLeaseAgreement(lease)}>

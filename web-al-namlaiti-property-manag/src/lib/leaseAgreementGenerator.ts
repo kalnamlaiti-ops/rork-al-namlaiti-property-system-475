@@ -224,10 +224,12 @@ export function validateLeaseAgreementFields(ctx: LeaseAgreementContext): LeaseA
   if (!ctx.lease.endDate) {
     errors.push({ field: "end_date", message: "Lease end date is missing" });
   }
-  if (!ctx.lease.cprNumber?.trim()) {
+  // CPR/phone may live on the lease snapshot or the live tenant record —
+  // either current source satisfies validation.
+  if (!ctx.lease.cprNumber?.trim() && !ctx.tenant.crNumber?.trim()) {
     errors.push({ field: "cpr_number", message: "CPR number is missing" });
   }
-  if (!ctx.lease.phoneNumber?.trim()) {
+  if (!ctx.lease.phoneNumber?.trim() && !ctx.tenant.phone?.trim()) {
     errors.push({ field: "phone_number", message: "Phone number is missing" });
   }
   return errors;
@@ -290,8 +292,9 @@ export async function generateLeaseAgreementPdf(
     end_date: formatAgreementDate(lease.endDate),
     rent_amount: formatAgreementRent(lease.monthlyRent),
     // CPR and phone are rendered with fixed prefixes on the agreement.
-    cpr_number: lease.cprNumber ? `CPR: ${lease.cprNumber}` : "",
-    phone_number: lease.phoneNumber ? `Ph#: ${lease.phoneNumber}` : "",
+    // Current tenant record wins; the lease copy is only a legacy fallback.
+    cpr_number: tenant.crNumber || lease.cprNumber ? `CPR: ${tenant.crNumber || lease.cprNumber}` : "",
+    phone_number: tenant.phone || lease.phoneNumber ? `Ph#: ${tenant.phone || lease.phoneNumber}` : "",
   };
 
   for (const key of ALL_FIELD_KEYS) {

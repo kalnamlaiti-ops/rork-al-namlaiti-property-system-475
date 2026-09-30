@@ -4,6 +4,16 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { useData } from "@/context/DataContext";
 import InvoiceForm from "@/components/forms/InvoiceForm";
 import PaymentForm from "@/components/forms/PaymentForm";
@@ -14,6 +24,7 @@ import {
   Send,
   Download,
   CheckCircle,
+  RotateCcw,
   XCircle,
   Loader2,
   Mail,
@@ -41,6 +52,7 @@ export default function InvoiceDetail() {
     sendInvoice,
     sendInvoiceWhatsAppMessage,
     markInvoicePaid,
+    undoInvoicePayment,
     voidInvoice,
     buildPdfContext,
   } = useData();
@@ -52,6 +64,7 @@ export default function InvoiceDetail() {
   const [sendingWa, setSendingWa] = useState(false);
   const [markingPaid, setMarkingPaid] = useState(false);
   const [voiding, setVoiding] = useState(false);
+  const [undoDialog, setUndoDialog] = useState(false);
   const [previewUrl, setPreviewUrl] = useState<string>("");
 
   const invoice = id ? getInvoiceById(id) : undefined;
@@ -119,6 +132,11 @@ export default function InvoiceDetail() {
     }
   };
 
+  const handleUndoPayment = () => {
+    setUndoDialog(false);
+    undoInvoicePayment(invoice.id);
+  };
+
   const handleVoid = async () => {
     setVoiding(true);
     try {
@@ -163,6 +181,11 @@ export default function InvoiceDetail() {
           {invoice.balance > 0 && !isCancelled && (
             <Button variant="outline" onClick={handleMarkPaid} disabled={markingPaid} className="text-emerald-600">
               {markingPaid ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <CheckCircle className="mr-2 h-4 w-4" />} Mark Paid
+            </Button>
+          )}
+          {invoice.status === "Paid" && (
+            <Button variant="outline" onClick={() => setUndoDialog(true)} className="text-amber-600">
+              <RotateCcw className="mr-2 h-4 w-4" /> Undo Payment
             </Button>
           )}
           {!isCancelled && (
@@ -350,6 +373,27 @@ export default function InvoiceDetail() {
           )}
         </DialogContent>
       </Dialog>
+
+      {/* Undo Payment confirmation */}
+      <AlertDialog open={undoDialog} onOpenChange={setUndoDialog}>
+        <AlertDialogContent className="max-w-md">
+          <AlertDialogHeader>
+            <AlertDialogTitle className="flex items-center gap-2 text-amber-600">
+              <RotateCcw className="h-5 w-5" /> Undo Payment
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to undo this payment? The invoice will be returned to its previous
+              unpaid/overdue status.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={handleUndoPayment} className="bg-amber-600 text-white hover:bg-amber-700">
+              Undo Payment
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

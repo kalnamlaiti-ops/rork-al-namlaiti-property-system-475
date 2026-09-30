@@ -2345,6 +2345,51 @@ export const [DataProvider, useData] = createContextHook(() => {
     [data.invoices, sendInvoice],
   );
 
+  /**
+   * Undo an accidental "Mark Paid": removes only the auto-recorded payment created
+   * by that action and restores the invoice to the exact status it had before.
+   * Other payments are untouched — the balance is recomputed from what remains.
+   */
+  const undoInvoicePayment = useCallback(
+    (invoiceId: string) => {
+      const invoice = data.invoices.find((i) => i.id === invoiceId);
+      if (!invoice) return;
+      const autoPayment = [...data.payments]
+        .filter((p) => p.invoiceId === invoiceId && p.viaMarkPaid)
+        // Latest first: ids embed the creation timestamp ("p-<millis>-<rand>").
+        .sort((a, b) => (Number(b.id.split("-")[1]) || 0) - (Number(a.id.split("-")[1]) || 0))[0];
+      if (!autoPayment) {
+        toast.error(`No Mark Paid payment found to undo on ${invoice.invoiceNumber}.`);
+        return;
+      }
+      const remainingPayments = data.payments.filter((p) => p.id !== autoPayment.id);
+      const remainingPaid = remainingPayments
+        .filter((p) => p.invoiceId === invoiceId)
+        .reduce((s, p) => s + (p.amount || 0), 0);
+      const rebalance = recomputeInvoiceFromPayments(invoice, remainingPayments);
+      const balance = rebalance ? rebalance.balance : Math.max(0, invoice.amount - autoPayment.amount);
+      // Exact pre-Mark-Paid status when no other payments remain; otherwise the
+      // recomputed status reflects the other payments that exist.
+      const status =
+        remainingPaid > 0
+          ? rebalance
+            ? rebalance.status
+            : "Partial"
+          : (autoPayment.previousInvoiceStatus ?? (rebalance ? rebalance.status : invoice.status));
+      sendDelete("payments", autoPayment.id, autoPayment as unknown as Record<string, unknown>);
+      sendUpdate("invoices", invoiceId, { balance, status });
+      pushHistory({
+        action: "Edited" as HistoryAction,
+        entityType: "Invoice",
+        entityId: invoiceId,
+        entityName: invoice.invoiceNumber,
+        summary: `Payment ${autoPayment.receiptNumber} undone — invoice restored to ${status}`,
+      });
+      toast.success(`Payment ${autoPayment.receiptNumber} undone — invoice restored to ${status}`);
+    },
+    [data.invoices, data.payments, sendUpdate, sendDelete, pushHistory],
+  );
+
   /** Mark invoice as Paid and post accounting + update balance. */
   const markInvoicePaid = useCallback(
     (invoiceId: string, paymentAmount?: number) => {
@@ -2370,6 +2415,8 @@ export const [DataProvider, useData] = createContextHook(() => {
         paymentDate: toISODate(new Date()),
         method: "Bank Transfer",
         notes: "Auto-recorded via Mark Paid action",
+        viaMarkPaid: true,
+        previousInvoiceStatus: invoice.status,
       };
       sendAdd("payments", payment);
 
@@ -2380,9 +2427,13 @@ export const [DataProvider, useData] = createContextHook(() => {
         entityName: invoice.invoiceNumber,
         summary: `Invoice ${invoice.invoiceNumber} marked ${newStatus} (payment ${payment.receiptNumber})`,
       });
-      toast.success(`Invoice ${invoice.invoiceNumber} marked ${newStatus}`);
+      toast.success(`Invoice ${invoice.invoiceNumber} marked ${newStatus}`, {
+        description: `Payment ${payment.receiptNumber} recorded — click Undo to reverse this action.`,
+        action: { label: "Undo", onClick: () => undoInvoicePayment(invoiceId) },
+        duration: 10000,
+      });
     },
-    [data.invoices, data.payments.length, sendUpdate, sendAdd, pushHistory],
+    [data.invoices, data.payments.length, sendUpdate, sendAdd, pushHistory, undoInvoicePayment],
   );
 
   /** Void/Cancel an invoice. */
@@ -2864,6 +2915,7 @@ export const [DataProvider, useData] = createContextHook(() => {
     sendInvoice,
     sendAllInvoices,
     markInvoicePaid,
+    undoInvoicePayment,
     voidInvoice,
     updateOverdueInvoices,
     buildPdfContext,

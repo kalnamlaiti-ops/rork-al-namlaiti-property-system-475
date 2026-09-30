@@ -251,6 +251,10 @@ export interface Payment {
   receiptEmailSent?: boolean;
   /** Auto-created journal entry id for this payment. */
   journalEntryId?: string;
+  /** True when this payment was auto-created by the invoice "Mark Paid" action. */
+  viaMarkPaid?: boolean;
+  /** Invoice status immediately before the Mark Paid action (used by Undo Payment). */
+  previousInvoiceStatus?: InvoiceStatus;
 }
 
 export interface Expense {

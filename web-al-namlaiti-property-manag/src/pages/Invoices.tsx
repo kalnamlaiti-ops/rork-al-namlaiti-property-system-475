@@ -10,6 +10,16 @@ import { useData } from "@/context/DataContext";
 import InvoiceForm from "@/components/forms/InvoiceForm";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
 import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import {
   Search,
   Pencil,
   Trash2,
@@ -17,6 +27,7 @@ import {
   Download,
   Eye,
   CheckCircle,
+  RotateCcw,
   Mail,
   MessageCircle,
   Loader2,
@@ -44,6 +55,7 @@ export default function Invoices() {
     sendInvoiceWhatsAppMessage,
     sendAllInvoicesWhatsApp,
     markInvoicePaid,
+    undoInvoicePayment,
     voidInvoice,
     buildPdfContext,
   } = useData();
@@ -57,6 +69,7 @@ export default function Invoices() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingInvoice, setEditingInvoice] = useState<Invoice | undefined>();
   const [deletingInvoice, setDeletingInvoice] = useState<Invoice | undefined>();
+  const [undoingInvoice, setUndoingInvoice] = useState<Invoice | undefined>();
   const [sendingAll, setSendingAll] = useState(false);
   const [busyInvoiceId, setBusyInvoiceId] = useState<string | null>(null);
   const [busyWhatsAppId, setBusyWhatsAppId] = useState<string | null>(null);
@@ -329,6 +342,11 @@ export default function Invoices() {
                               <CheckCircle className="h-3.5 w-3.5" />
                             </Button>
                           )}
+                          {i.status === "Paid" && (
+                            <Button variant="ghost" size="sm" onClick={() => setUndoingInvoice(i)} title="Undo Payment" className="text-amber-600">
+                              <RotateCcw className="h-3.5 w-3.5" />
+                            </Button>
+                          )}
                           <Button variant="ghost" size="sm" onClick={() => openEdit(i)} title="Edit">
                             <Pencil className="h-3.5 w-3.5" />
                           </Button>
@@ -352,6 +370,32 @@ export default function Invoices() {
         itemName={deletingInvoice?.invoiceNumber}
         onConfirm={() => deletingInvoice && deleteInvoice(deletingInvoice.id)}
       />
+
+      <AlertDialog open={Boolean(undoingInvoice)} onOpenChange={(o) => !o && setUndoingInvoice(undefined)}>
+        <AlertDialogContent className="max-w-md">
+          <AlertDialogHeader>
+            <AlertDialogTitle className="flex items-center gap-2 text-amber-600">
+              <RotateCcw className="h-5 w-5" /> Undo Payment
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to undo this payment? The invoice will be returned to its previous
+              unpaid/overdue status.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={() => setUndoingInvoice(undefined)}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                if (undoingInvoice) undoInvoicePayment(undoingInvoice.id);
+                setUndoingInvoice(undefined);
+              }}
+              className="bg-amber-600 text-white hover:bg-amber-700"
+            >
+              Undo Payment
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
         <DialogContent className="max-h-[90vh] max-w-4xl overflow-y-auto">

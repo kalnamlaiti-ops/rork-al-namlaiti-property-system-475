@@ -62,9 +62,12 @@ export default function Invoices() {
   const [busyWhatsAppId, setBusyWhatsAppId] = useState<string | null>(null);
   const [sendingAllWa, setSendingAllWa] = useState(false);
 
-  const totalBilled = invoices.reduce((sum, i) => sum + i.amount, 0);
-  const totalCollected = totalBilled - invoices.reduce((sum, i) => sum + i.balance, 0);
-  const outstanding = invoices.reduce((sum, i) => sum + i.balance, 0);
+  // Cancelled invoices are void documents (balance forced to 0 on void) —
+  // counting them would treat their original amount as "collected".
+  const billableInvoices = invoices.filter((i) => i.status !== "Cancelled");
+  const totalBilled = billableInvoices.reduce((sum, i) => sum + i.amount, 0);
+  const totalCollected = totalBilled - billableInvoices.reduce((sum, i) => sum + i.balance, 0);
+  const outstanding = billableInvoices.reduce((sum, i) => sum + i.balance, 0);
   const overdueCount = invoices.filter((i) => i.status === "Overdue").length;
 
   const filtered = useMemo(() => {

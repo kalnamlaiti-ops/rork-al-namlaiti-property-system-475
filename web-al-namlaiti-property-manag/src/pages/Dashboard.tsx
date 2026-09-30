@@ -27,9 +27,12 @@ export default function Dashboard() {
   // Unresolved tickets (Open or In Progress) — real count from live data.
   const openComplaints = complaints.filter((c) => c.status === "Open" || c.status === "In Progress").length;
 
-  const totalBilled = invoices.reduce((sum, i) => sum + i.amount, 0);
-  const totalCollected = totalBilled - invoices.reduce((sum, i) => sum + i.balance, 0);
-  const outstanding = invoices.reduce((sum, i) => sum + i.balance, 0);
+  // Cancelled invoices are void documents (balance forced to 0 on void) —
+  // counting them would treat their original amount as "collected".
+  const billableInvoices = invoices.filter((i) => i.status !== "Cancelled");
+  const totalBilled = billableInvoices.reduce((sum, i) => sum + i.amount, 0);
+  const totalCollected = totalBilled - billableInvoices.reduce((sum, i) => sum + i.balance, 0);
+  const outstanding = billableInvoices.reduce((sum, i) => sum + i.balance, 0);
   const overdueInvoices = invoices.filter((i) => i.status === "Overdue").length;
   const overdueAmount = invoices.filter((i) => i.status === "Overdue").reduce((sum, i) => sum + i.balance, 0);
 

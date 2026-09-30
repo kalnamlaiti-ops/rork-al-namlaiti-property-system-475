@@ -41,13 +41,12 @@ import {
   type ServerMessage,
 } from "@/lib/syncClient";
 import {
-  calculateInvoice,
-  computeDueDate,
+  formatPeriodLabel,
   generateInvoiceNumber,
-  invoiceExistsForPeriod,
   toISODate,
   toPeriodKey,
 } from "@/lib/invoiceGenerator";
+import { planLeaseInvoiceSync, periodKeyOf } from "@/lib/leaseInvoiceSync";
 import { buildInvoiceJournalEntry } from "@/lib/accountingHelper";
 import { sendInvoiceEmail, sendPaymentReceiptEmail } from "@/lib/emailClient";
 import {
@@ -898,6 +897,90 @@ export const [DataProvider, useData] = createContextHook(() => {
     [buildLeaseAgreementContext, fieldConfigs],
   );
 
+  /**
+   * Lease-driven invoice synchronization — the lease is the source of truth
+   * for the future rent schedule. Runs automatically when a lease is created
+   * or edited, and once on app load for existing leases: creates missing
+   * monthly invoices, re-syncs future unpaid amounts/links, and cancels
+   * unpaid invoices that fall outside the lease period. Paid and partially
+   * paid invoices are never modified. Every change flows through the durable
+   * mutation pipeline (Worker → Durable Object → SQLite → broadcast).
+   */
+  const syncLeaseInvoices = useCallback(
+    (lease: Lease, options?: { silent?: boolean }): { created: number; updated: number; cancelled: number } => {
+      if (lease.status !== "Active") return { created: 0, updated: 0, cancelled: 0 };
+      const unit = data.units.find((u) => u.id === lease.unitId);
+      const plan = planLeaseInvoiceSync({
+        lease,
+        invoices: data.invoices,
+        payments: data.payments,
+        ewaBills: data.ewaBills,
+        maintenanceRequests: data.maintenanceRequests,
+        expenses: data.expenses,
+        unitBuildingId: unit?.buildingId ?? "",
+        currentPeriodKey: toPeriodKey(new Date()),
+        nextInvoiceNumber: (i: number) => generateInvoiceNumber(data.invoices.length + i),
+        paymentInstructions: `Please transfer the total amount to ${COMPANY_INFO.name} bank account within 5 days of the due date. For questions, contact ${COMPANY_INFO.email}.`,
+      });
+
+      for (const invoice of plan.create) {
+        sendAdd("invoices", invoice);
+        // ── Cascade: mark linked EWA/Expenses/Maintenance as Invoiced ──
+        const cascade = invoiceCascade(invoice);
+        for (const upd of cascade) {
+          if (upd.kind === "update" && upd.id && upd.patch) {
+            sendUpdate(upd.collection as keyof DataStore, upd.id, upd.patch);
+          }
+        }
+        pushHistory({
+          action: "Created" as HistoryAction,
+          entityType: "Invoice",
+          entityId: invoice.id,
+          entityName: invoice.invoiceNumber,
+          summary: `Invoice ${invoice.invoiceNumber} auto-created for ${formatPeriodLabel(periodKeyOf(invoice.periodFrom))} — lease "${lease.contractNumber}"`,
+        });
+      }
+      for (const upd of plan.update) {
+        sendUpdate("invoices", upd.id, upd.patch as unknown as Record<string, unknown>);
+        pushHistory({
+          action: "Edited" as HistoryAction,
+          entityType: "Invoice",
+          entityId: upd.id,
+          entityName: upd.invoiceNumber,
+          summary: `Invoice ${upd.invoiceNumber} synchronized with lease "${lease.contractNumber}" — ${upd.reason}`,
+        });
+      }
+      for (const cancelled of plan.cancel) {
+        sendUpdate("invoices", cancelled.id, { status: "Cancelled", balance: 0 } as unknown as Record<string, unknown>);
+        pushHistory({
+          action: "Edited" as HistoryAction,
+          entityType: "Invoice",
+          entityId: cancelled.id,
+          entityName: cancelled.invoiceNumber,
+          summary: `Invoice ${cancelled.invoiceNumber} cancelled — billing month no longer within lease "${lease.contractNumber}"`,
+        });
+      }
+      const changed = plan.create.length + plan.update.length + plan.cancel.length;
+      if (changed > 0 && !options?.silent) {
+        toast.success(
+          `Lease "${lease.contractNumber}" invoices synchronized — ${plan.create.length} created, ${plan.update.length} updated, ${plan.cancel.length} cancelled`,
+        );
+      }
+      return { created: plan.create.length, updated: plan.update.length, cancelled: plan.cancel.length };
+    },
+    [
+      data.invoices,
+      data.payments,
+      data.ewaBills,
+      data.maintenanceRequests,
+      data.expenses,
+      data.units,
+      sendAdd,
+      sendUpdate,
+      pushHistory,
+    ],
+  );
+
   const addLease = useCallback(
     (lease: Omit<Lease, "id">) => {
       const newLease: Lease = { ...lease, id: generateId("l") };
@@ -918,10 +1001,15 @@ export const [DataProvider, useData] = createContextHook(() => {
       });
       // ── Automatic lease agreement generation (non-blocking) ──
       persistLeaseAgreement(newLease, false);
-      toast.success(`Lease "${newLease.contractNumber}" created — unit & tenant auto-linked`);
+      // ── Automatic monthly invoice scheduling (lease = source of truth) ──
+      const invoiceSync = syncLeaseInvoices(newLease, { silent: true });
+      toast.success(
+        `Lease "${newLease.contractNumber}" created — unit & tenant auto-linked` +
+          (invoiceSync.created > 0 ? ` — ${invoiceSync.created} monthly invoice(s) scheduled` : ""),
+      );
       return newLease;
     },
-    [sendAdd, pushHistory, sendUpdate, persistLeaseAgreement, data.units, data.tenants, data.buildings],
+    [sendAdd, pushHistory, sendUpdate, persistLeaseAgreement, syncLeaseInvoices, data.units, data.tenants, data.buildings],
   );
 
   const updateLease = useCallback(
@@ -968,9 +1056,17 @@ export const [DataProvider, useData] = createContextHook(() => {
         summary: `Lease "${name}" edited (${changes.length} field${changes.length === 1 ? "" : "s"} changed)`,
         changes,
       });
-      toast.success("Lease updated");
+      // ── Automatic invoice synchronization (lease = source of truth) ──
+      let invoiceSyncNote = "";
+      if (updatedLease) {
+        const invoiceSync = syncLeaseInvoices(updatedLease, { silent: true });
+        if (invoiceSync.created + invoiceSync.updated + invoiceSync.cancelled > 0) {
+          invoiceSyncNote = ` — invoices synchronized (${invoiceSync.created} created, ${invoiceSync.updated} updated, ${invoiceSync.cancelled} cancelled)`;
+        }
+      }
+      toast.success(`Lease updated${invoiceSyncNote}`);
     },
-    [sendUpdate, pushHistory, sendUpdate, data.units, data.tenants, data.buildings],
+    [sendUpdate, pushHistory, syncLeaseInvoices, data.units, data.tenants, data.buildings],
   );
 
   const deleteLease = useCallback(
@@ -2344,123 +2440,22 @@ export const [DataProvider, useData] = createContextHook(() => {
     [sendAdd, pushHistory, data.chartOfAccounts, data.journalEntries.length],
   );
 
-  /** Generate invoices for all active leases for a given billing period. */
-  const generateMonthlyInvoices = useCallback(
-    async (periodKey?: string): Promise<{ generated: number; skipped: number; errors: string[] }> => {
-      const pk = periodKey ?? toPeriodKey(new Date());
-      const activeLeases = data.leases.filter((l) => l.status === "Active");
-      const errors: string[] = [];
-      let generated = 0;
-      let skipped = 0;
-
-      for (const lease of activeLeases) {
-        // Prevent duplicate generation
-        if (invoiceExistsForPeriod(data.invoices, lease.id, pk)) {
-          skipped++;
-          continue;
-        }
-
-        const tenant = data.tenants.find((t) => t.id === lease.tenantId);
-        if (!tenant) {
-          errors.push(`Lease ${lease.contractNumber}: tenant not found`);
-          continue;
-        }
-
-        // Resolve the unit's building id so building-level expenses are matched.
-        const unit = data.units.find((u) => u.id === lease.unitId);
-        const unitBuildingId = unit?.buildingId ?? "";
-
-        const calc = calculateInvoice({
-          lease,
-          ewaBills: data.ewaBills,
-          maintenanceRequests: data.maintenanceRequests,
-          expenses: data.expenses,
-          previousInvoices: data.invoices,
-          periodKey: pk,
-          unitBuildingId,
-        });
-
-        if (calc.total <= 0) {
-          skipped++;
-          continue;
-        }
-
-        const issueDate = new Date();
-        const invoiceNumber = generateInvoiceNumber(data.invoices.length + generated);
-        const newInvoice: Invoice = {
-          id: generateId("inv"),
-          invoiceNumber,
-          tenantId: tenant.id,
-          leaseId: lease.id,
-          unitId: lease.unitId,
-          issueDate: toISODate(issueDate),
-          dueDate: computeDueDate(issueDate),
-          periodFrom: `${pk}-01`,
-          periodTo: `${pk}-28`,
-          amount: calc.total,
-          balance: calc.total,
-          status: "Sent",
-          lineItems: calc.lineItems,
-          rentAmount: calc.rentAmount,
-          ewaAmount: calc.ewaAmount,
-          maintenanceAmount: calc.maintenanceAmount,
-          otherExpensesAmount: calc.otherExpensesAmount,
-          previousBalance: calc.previousBalance,
-          taxRate: 0,
-          taxAmount: calc.taxAmount,
-          emailStatus: "Not Sent",
-          generatedAutomatically: true,
-          ewaBillIds: calc.ewaBillIds,
-          expenseIds: calc.expenseIds,
-          maintenanceIds: calc.maintenanceIds,
-          paymentInstructions: `Please transfer the total amount to ${COMPANY_INFO.name} bank account within 5 days of the due date. For questions, contact ${COMPANY_INFO.email}.`,
-        };
-
-        sendAdd("invoices", newInvoice);
-        const jeId = postInvoiceJournal(newInvoice);
-        if (jeId) {
-          sendUpdate("invoices", newInvoice.id, { journalEntryId: jeId });
-        }
-
-        // ── Cascade: mark linked EWA/Expenses/Maintenance as Invoiced ──
-        const cascade = invoiceCascade(newInvoice);
-        for (const upd of cascade) {
-          if (upd.kind === "update" && upd.id && upd.patch) {
-            sendUpdate(upd.collection as keyof DataStore, upd.id, upd.patch);
-          }
-        }
-
-        pushHistory({
-          action: "Created" as HistoryAction,
-          entityType: "Invoice",
-          entityId: newInvoice.id,
-          entityName: newInvoice.invoiceNumber,
-          summary: `Invoice ${invoiceNumber} auto-generated for ${tenant.name} (${pk}) — EWA/Expenses/Maintenance marked invoiced`,
-        });
-        generated++;
-
-        // ── Auto-email the invoice to the tenant (background, non-blocking) ──
-        if (tenant.email) {
-          void sendInvoice(newInvoice.id).catch((err) => {
-            console.error("[automation] auto-email failed for", invoiceNumber, err);
-          });
-        }
-      }
-
-      if (generated > 0) {
-        toast.success(`${generated} invoice(s) generated for ${pk}`);
-      }
-      if (skipped > 0) {
-        toast.info(`${skipped} lease(s) skipped (already invoiced or zero amount)`);
-      }
-      if (errors.length > 0) {
-        toast.error(`${errors.length} error(s) during generation`);
-      }
-
-      return { generated, skipped, errors };
-    },
-    [data.leases, data.tenants, data.ewaBills, data.maintenanceRequests, data.expenses, data.invoices, data.chartOfAccounts, data.journalEntries.length, sendAdd, sendUpdate, pushHistory, postInvoiceJournal],
-  );
+  // ── Automatic lease invoice synchronization (backfill) ──
+  // Invoice scheduling runs in the lease workflow (create/edit). This backfill
+  // additionally covers leases that predate the automation and any schedule
+  // drift: once per session, after the workspace snapshot arrives, every lease
+  // is synchronized and missing monthly invoices are created. The sync is
+  // idempotent (leaseId + billing month, deterministic invoice ids), so
+  // re-running — on this client or any other — can never duplicate invoices.
+  const hasBackfilledInvoicesRef = useRef(false);
+  useEffect(() => {
+    if (hasBackfilledInvoicesRef.current) return;
+    if (data.leases.length === 0) return;
+    hasBackfilledInvoicesRef.current = true;
+    for (const lease of data.leases) {
+      syncLeaseInvoices(lease, { silent: true });
+    }
+  }, [data.leases, syncLeaseInvoices]);
 
   /** Send a single invoice via email (updates emailStatus). */
   const sendInvoice = useCallback(
@@ -2475,6 +2470,14 @@ export const [DataProvider, useData] = createContextHook(() => {
       const result = await sendInvoiceEmail(ctx);
 
       if (result.success) {
+        // Post the invoice journal entry when the invoice is actually issued
+        // (lease-scheduled invoices are created as Draft without accounting entries).
+        if (!invoice.journalEntryId) {
+          const jeId = postInvoiceJournal(invoice);
+          if (jeId) {
+            sendUpdate("invoices", invoiceId, { journalEntryId: jeId } as unknown as Record<string, unknown>);
+          }
+        }
         sendUpdate("invoices", invoiceId, {
           emailStatus: "Sent",
           emailSentAt: nowISO(),
@@ -2506,7 +2509,7 @@ export const [DataProvider, useData] = createContextHook(() => {
         return false;
       }
     },
-    [data.invoices, sendUpdate, pushHistory, buildPdfContext],
+    [data.invoices, sendUpdate, pushHistory, buildPdfContext, postInvoiceJournal],
   );
 
   /** Batch-send all Draft/Sent invoices via email (queued in background). */
@@ -3052,7 +3055,7 @@ export const [DataProvider, useData] = createContextHook(() => {
     clearHistory,
     recoverEntity,
     // Automated invoicing
-    generateMonthlyInvoices,
+    syncLeaseInvoices,
     sendInvoice,
     sendAllInvoices,
     markInvoicePaid,

@@ -1432,6 +1432,37 @@ export const [DataProvider, useData] = createContextHook(() => {
     [sendUpdate, pushHistory],
   );
 
+  /**
+   * Mark EWA bills as Invoiced after they were included in an invoice — the
+   * same cascade the automation path applies (invoiceCascade: status Invoiced
+   * + invoiceId) — so the same bill can never be billed twice. One history
+   * entry for the whole batch instead of one per bill.
+   */
+  const markEwaBillsInvoiced = useCallback(
+    (billIds: string[], invoiceId: string, invoiceNumber: string) => {
+      if (billIds.length === 0) return;
+      const names: string[] = [];
+      setData((prev) => {
+        for (const id of billIds) {
+          const existing = prev.ewaBills.find((b) => b.id === id);
+          if (existing) names.push(existing.billNumber);
+        }
+        return prev;
+      });
+      for (const id of billIds) {
+        sendUpdate("ewaBills", id, { status: "Invoiced", invoiceId } as unknown as Record<string, unknown>);
+      }
+      pushHistory({
+        action: "Edited",
+        entityType: "EWA Bill",
+        entityId: invoiceId,
+        entityName: invoiceNumber,
+        summary: `${billIds.length} EWA bill(s)${names.length > 0 ? ` (${names.join(", ")})` : ""} marked Invoiced — included in invoice "${invoiceNumber}"`,
+      });
+    },
+    [sendUpdate, pushHistory],
+  );
+
   const deleteEWABill = useCallback(
     (id: string) => {
       let name = "EWA Bill";
@@ -3005,6 +3036,7 @@ export const [DataProvider, useData] = createContextHook(() => {
     getInvoicePayments,
     addEWABill,
     updateEWABill,
+    markEwaBillsInvoiced,
     deleteEWABill,
     addEWAAccount,
     updateEWAAccount,

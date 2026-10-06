@@ -1,10 +1,12 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect, useRef } from "react";
+import { Zap } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { useData, generateCode } from "@/context/DataContext";
-import type { Invoice, InvoiceLineItem } from "@/types";
+import { formatPeriodLabel } from "@/lib/invoiceGenerator";
+import type { EWABill, Invoice, InvoiceLineItem } from "@/types";
 
 interface InvoiceFormProps {
   initialData?: Invoice;
@@ -13,8 +15,11 @@ interface InvoiceFormProps {
 
 const lineItemTypes: InvoiceLineItem["type"][] = ["Rent", "Service Charge", "EWA", "Other"];
 
+/** Id prefix of the EWA line item auto-added from the unit's linked EWA account. */
+const AUTO_EWA_PREFIX = "li-ewa-auto";
+
 export default function InvoiceForm({ initialData, onClose }: InvoiceFormProps) {
-  const { addInvoice, updateInvoice, leases, invoices, getTenantById, getUnitById } = useData();
+  const { addInvoice, updateInvoice, leases, invoices, ewaBills, ewaAccounts, getTenantById, getUnitById, markEwaBillsInvoiced } = useData();
   const isEdit = Boolean(initialData);
 
   const [form, setForm] = useState({
@@ -32,6 +37,49 @@ export default function InvoiceForm({ initialData, onClose }: InvoiceFormProps) 
   const selectedLease = leases.find((l) => l.id === form.leaseId);
   const tenant = selectedLease ? getTenantById(selectedLease.tenantId) : undefined;
   const unit = selectedLease ? getUnitById(selectedLease.unitId) : undefined;
+
+  // ── Automatic EWA pull from the unit's Linked EWA account ──
+  // Processing an EWA distribution creates one Pending (uninvoiced) EWA bill
+  // per linked unit, keyed to its lease. Those bills are pulled in here
+  // automatically as an editable line item — no manual entry needed.
+  const autoEwaBills = useMemo(() => {
+    if (isEdit || !selectedLease) return [] as EWABill[];
+    return ewaBills.filter(
+      (b) =>
+        b.status === "Pending" &&
+        !b.invoiceId &&
+        (b.leaseId === selectedLease.id || (!b.leaseId && b.unitId === selectedLease.unitId)),
+    );
+  }, [isEdit, selectedLease, ewaBills]);
+  const autoEwaTotal = autoEwaBills.reduce((sum, b) => sum + (b.billAmount || 0), 0);
+  const autoEwaAccountLabels = [
+    ...new Set(autoEwaBills.map((b) => b.ewaAccountId ?? "")),
+  ].map((id) => ewaAccounts.find((a) => a.id === id)?.accountNumber ?? "EWA");
+
+  // Rebuild the auto EWA line item whenever the lease changes (new invoices only).
+  const lastAutoEwaLease = useRef<string>("");
+  useEffect(() => {
+    const leaseId = selectedLease?.id ?? "";
+    if (leaseId === lastAutoEwaLease.current) return;
+    lastAutoEwaLease.current = leaseId;
+    setForm((prev) => {
+      const withoutAuto = prev.lineItems.filter((li) => !li.id.startsWith(AUTO_EWA_PREFIX));
+      if (isEdit || leaseId === "" || autoEwaBills.length === 0) return { ...prev, lineItems: withoutAuto };
+      const months = [...new Set(autoEwaBills.map((b) => b.month))].map(formatPeriodLabel).join(", ");
+      return {
+        ...prev,
+        lineItems: [
+          ...withoutAuto,
+          {
+            id: `${AUTO_EWA_PREFIX}-${leaseId}`,
+            description: `EWA Utility Charges — ${months}`,
+            amount: Number(autoEwaTotal.toFixed(3)),
+            type: "EWA" as const,
+          },
+        ],
+      };
+    });
+  }, [isEdit, selectedLease, autoEwaBills, autoEwaTotal]);
 
   const subtotal = form.lineItems.reduce((sum, li) => sum + (Number(li.amount) || 0), 0);
   const total = subtotal;
@@ -82,23 +130,44 @@ export default function InvoiceForm({ initialData, onClose }: InvoiceFormProps) 
     const invoiceNumber = initialData?.invoiceNumber ?? generateCode("INV", invoices.length);
     const status = initialData?.status ?? "Draft";
 
+    const sumByType = (type: InvoiceLineItem["type"]) =>
+      form.lineItems.filter((li) => li.type === type).reduce((sum, li) => sum + (Number(li.amount) || 0), 0);
+    const rentAmount = sumByType("Rent");
+    const ewaAmount = sumByType("EWA");
+    const maintenanceAmount = sumByType("Service Charge");
+
+    // Only link EWA bills that are actually still on the invoice — if the
+    // auto line was removed or zeroed, the bills stay Pending for next time.
+    const autoLineIncluded = form.lineItems.some((li) => li.id.startsWith(AUTO_EWA_PREFIX));
+    const ewaBillIds = initialData?.ewaBillIds ?? (autoLineIncluded && ewaAmount > 0 ? autoEwaBills.map((b) => b.id) : []);
+
     const payload = {
       invoiceNumber,
       tenantId: tenant.id,
       leaseId: selectedLease.id,
       unitId: unit.id,
+      issueDate: form.invoiceDate,
       dueDate: form.dueDate,
+      periodFrom: form.periodFrom,
+      periodTo: form.periodTo,
       amount: total,
       balance: total,
       status,
       lineItems: form.lineItems.map((li) => ({ ...li, amount: Number(li.amount) })),
       notes: form.notes,
+      ewaBillIds,
+      ...(rentAmount > 0 ? { rentAmount } : {}),
+      ...(ewaAmount > 0 ? { ewaAmount } : {}),
+      ...(maintenanceAmount > 0 ? { maintenanceAmount } : {}),
     };
 
     if (initialData) {
       updateInvoice(initialData.id, payload);
     } else {
-      addInvoice(payload);
+      const created = addInvoice(payload);
+      // Cascade (same as the automation path): mark the pulled EWA bills as
+      // Invoiced so they can never be billed twice.
+      markEwaBillsInvoiced(ewaBillIds, created.id, created.invoiceNumber);
     }
     onClose();
   };
@@ -152,6 +221,19 @@ export default function InvoiceForm({ initialData, onClose }: InvoiceFormProps) 
           </div>
         </div>
       </div>
+
+      {!isEdit && autoEwaBills.length > 0 && (
+        <div className="flex items-start gap-3 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3">
+          <Zap className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" />
+          <div>
+            <p className="text-sm font-medium text-emerald-900">EWA charges added automatically</p>
+            <p className="text-xs text-emerald-800/80">
+              {autoEwaBills.length} pending bill{autoEwaBills.length === 1 ? "" : "s"} from linked EWA account{" "}
+              {autoEwaAccountLabels.join(", ")} · BHD {autoEwaTotal.toFixed(3)} — included as a line item below (still editable).
+            </p>
+          </div>
+        </div>
+      )}
 
       <div className="rounded-lg border bg-card p-6">
         <div className="mb-4 flex items-center justify-between">

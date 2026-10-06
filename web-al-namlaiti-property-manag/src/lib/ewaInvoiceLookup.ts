@@ -88,9 +88,57 @@ export interface EwaClassifyResult {
   perUnit: boolean;
   /** False when this unit's share is excluded or charged to the landlord. */
   chargeable: boolean;
+  /** True when this unit's share is absorbed by the landlord (vacant unit). */
+  landlord: boolean;
   /** False when the bill is a per-unit bill belonging to a different unit —
    *  irrelevant for this lookup (there is simply no bill for this unit). */
   belongs: boolean;
+}
+
+/** Values of the full lookup chain — used for the temporary debug log. */
+interface EwaDebugInfo {
+  leaseId?: string;
+  unitId?: string;
+  unitNumber?: string;
+  accountId?: string;
+  accountNumber?: string;
+  billId?: string;
+  billMonth?: string;
+  billTotal?: number;
+  allocationUnitId?: string;
+  allocationAmount?: number;
+  periodFrom?: string;
+  periodTo?: string;
+  finalAmount?: number;
+}
+
+const debugValue = (v: unknown): string =>
+  v === undefined || v === null || v === "" ? "(not found)" : String(v);
+
+/**
+ * TEMPORARY: logs the complete Lease → Unit → EWA Account → EWA Bill →
+ * allocation chain so a broken relationship is immediately visible in the
+ * console. Remove once the EWA invoice flow is confirmed stable.
+ */
+function logEwaDebug(info: EwaDebugInfo, extra?: string[]): void {
+  const lines = [
+    "[EWA INVOICE DEBUG]",
+    `LEASE ID: ${debugValue(info.leaseId)}`,
+    `UNIT ID: ${debugValue(info.unitId)}`,
+    `UNIT NUMBER: ${debugValue(info.unitNumber)}`,
+    `EWA ACCOUNT ID: ${debugValue(info.accountId)}`,
+    `EWA ACCOUNT NUMBER: ${debugValue(info.accountNumber)}`,
+    `EWA BILL ID: ${debugValue(info.billId)}`,
+    `EWA BILL MONTH: ${debugValue(info.billMonth)}`,
+    `EWA BILL TOTAL: ${info.billTotal === undefined ? "(not found)" : info.billTotal.toFixed(3)}`,
+    `ALLOCATION UNIT ID: ${debugValue(info.allocationUnitId)}`,
+    `ALLOCATION AMOUNT: ${info.allocationAmount === undefined ? "(not found)" : info.allocationAmount.toFixed(3)}`,
+    `INVOICE PERIOD FROM: ${debugValue(info.periodFrom)}`,
+    `INVOICE PERIOD TO: ${debugValue(info.periodTo)}`,
+    `FINAL EWA AMOUNT: ${info.finalAmount === undefined ? "(none)" : info.finalAmount.toFixed(3)}`,
+  ];
+  if (extra?.length) lines.push(...extra);
+  console.log(lines.join("\n"));
 }
 
 /**
@@ -116,13 +164,19 @@ export function classifyEwaBill(
   if (distAlloc) {
     if (distAlloc.unitId !== unitId) {
       // The bill is another unit's per-unit bill — no bill for this unit.
-      return { share: 0, perUnit: true, chargeable: false, belongs: false };
+      return { share: 0, perUnit: true, chargeable: false, landlord: false, belongs: false };
     }
     const chargeable = !distAlloc.excluded && !distAlloc.chargeToLandlord && distAlloc.amount > 0;
-    return { share: round3(bill.billAmount || 0), perUnit: true, chargeable, belongs: true };
+    return {
+      share: round3(bill.billAmount || 0),
+      perUnit: true,
+      chargeable,
+      landlord: chargeable ? false : distAlloc.chargeToLandlord,
+      belongs: true,
+    };
   }
 
-  if (!account) return { share: 0, perUnit: false, chargeable: false, belongs: false };
+  if (!account) return { share: 0, perUnit: false, chargeable: false, landlord: false, belongs: false };
 
   const result = computeAllocation({
     account,
@@ -132,10 +186,16 @@ export function classifyEwaBill(
     tenants: data.tenants,
   });
   const allocation = result.allocations.find((a) => a.unitId === unitId);
-  if (!allocation || allocation.excluded || allocation.chargeToLandlord || allocation.amount <= 0) {
-    return { share: 0, perUnit: false, chargeable: false, belongs: true };
+  if (!allocation) {
+    return { share: 0, perUnit: false, chargeable: false, landlord: false, belongs: true };
   }
-  return { share: round3(allocation.amount), perUnit: false, chargeable: true, belongs: true };
+  if (allocation.chargeToLandlord) {
+    return { share: 0, perUnit: false, chargeable: false, landlord: true, belongs: true };
+  }
+  if (allocation.excluded || allocation.amount <= 0) {
+    return { share: 0, perUnit: false, chargeable: false, landlord: false, belongs: true };
+  }
+  return { share: round3(allocation.amount), perUnit: false, chargeable: true, landlord: false, belongs: true };
 }
 
 /** The EWA account serving a unit (Active first, any linked account as fallback). */
@@ -164,6 +224,8 @@ export interface EwaLookupInput extends EwaLookupData {
   leaseId: string;
   /** Invoice billing period start (e.g. "2026-10-01") — determines the month. */
   periodFrom: string;
+  /** Invoice billing period end — logged for debugging. */
+  periodTo?: string;
   /** EWA bills already attached to other EWA lines on this invoice. */
   usedBillIds?: string[];
 }
@@ -176,17 +238,35 @@ export interface EwaLookupInput extends EwaLookupData {
  * "choice" so the user picks instead of the system guessing.
  */
 export function resolveEwaCharge(input: EwaLookupInput): EwaResolution {
-  const { leaseId, periodFrom, usedBillIds = [] } = input;
+  const { leaseId, periodFrom, periodTo, usedBillIds = [] } = input;
+  const periodKey = monthKeyOf(periodFrom);
+
   const lease = input.leases.find((l) => l.id === leaseId);
-  if (!lease) return { status: "none", message: "Select a lease first." };
+  if (!lease) {
+    logEwaDebug({ leaseId, periodFrom, periodTo });
+    return {
+      status: "none",
+      message: leaseId ? "Lease could not be found." : "Select a lease first.",
+    };
+  }
 
   const unit = input.units.find((u) => u.id === lease.unitId);
-  if (!unit) return { status: "none", message: "No unit found for this lease." };
+  if (!unit) {
+    logEwaDebug({ leaseId: lease.id, unitId: lease.unitId, periodFrom, periodTo });
+    return { status: "none", message: "Lease has no Unit." };
+  }
 
   const account = findUnitEwaAccount(unit.id, input.ewaAccounts);
-  if (!account) return { status: "none", message: "No EWA account is linked to this unit." };
-
-  const periodKey = monthKeyOf(periodFrom);
+  if (!account) {
+    logEwaDebug({
+      leaseId: lease.id,
+      unitId: unit.id,
+      unitNumber: unit.unitNumber,
+      periodFrom,
+      periodTo,
+    });
+    return { status: "none", message: "No EWA Account linked to this Unit." };
+  }
 
   // Bills belonging to the shared account; fall back to unit/lease-linked
   // bills that predate account linking.
@@ -197,54 +277,92 @@ export function resolveEwaCharge(input: EwaLookupInput): EwaResolution {
         (!b.ewaAccountId && (b.unitId === unit.id || b.leaseId === lease.id))),
   );
   if (matched.length === 0) {
-    return { status: "none", message: "No EWA bill found for this unit and billing period." };
+    logEwaDebug({
+      leaseId: lease.id,
+      unitId: unit.id,
+      unitNumber: unit.unitNumber,
+      accountId: account.id,
+      accountNumber: account.accountNumber,
+      periodFrom,
+      periodTo,
+    });
+    return { status: "none", message: "No EWA Bill found for this Unit and billing period." };
   }
 
   const used = new Set(usedBillIds);
   const duplicates: EWABill[] = [];
   const invoiced: EWABill[] = [];
+  const landlordBills: EWABill[] = [];
   const notChargeable: EWABill[] = [];
   const available: EwaCandidate[] = [];
+  const candidateNotes: string[] = [];
 
   for (const bill of matched) {
     if (used.has(bill.id)) {
       duplicates.push(bill);
+      candidateNotes.push(`CANDIDATE: ${bill.billNumber} — already on this invoice`);
       continue;
     }
     if (bill.invoiceId || bill.status === "Invoiced") {
       invoiced.push(bill);
+      candidateNotes.push(`CANDIDATE: ${bill.billNumber} — already invoiced`);
       continue;
     }
     const cls = classifyEwaBill(bill, unit.id, account, input);
     if (!cls.belongs) continue; // another unit's per-unit bill
     if (!cls.chargeable) {
-      notChargeable.push(bill);
+      if (cls.landlord) landlordBills.push(bill);
+      else notChargeable.push(bill);
+      candidateNotes.push(
+        `CANDIDATE: ${bill.billNumber} — ${cls.landlord ? "charged to landlord" : "no allocation for this unit"}`,
+      );
       continue;
     }
     available.push({ bill, account, share: cls.share, perUnit: cls.perUnit });
+    candidateNotes.push(
+      `CANDIDATE: ${bill.billNumber} — allocation ${cls.share.toFixed(3)} BHD`,
+    );
   }
+
+  const first = matched[0];
+  const debugBase = {
+    leaseId: lease.id,
+    unitId: unit.id,
+    unitNumber: unit.unitNumber,
+    accountId: account.id,
+    accountNumber: account.accountNumber,
+    billId: first.id,
+    billMonth: first.month,
+    billTotal: first.billAmount,
+    allocationUnitId: unit.id,
+    periodFrom,
+    periodTo,
+  };
 
   if (available.length === 0) {
     if (duplicates.length > 0) {
+      logEwaDebug({ ...debugBase, finalAmount: undefined }, candidateNotes);
       return { status: "none", message: "EWA already added to this invoice." };
     }
     if (invoiced.length > 0) {
-      const first = invoiced[0];
-      const existingInvoice = first.invoiceId
-        ? input.invoices.find((i) => i.id === first.invoiceId)
-        : undefined;
-      return {
-        status: "none",
-        message: `EWA bill already invoiced${existingInvoice ? ` on ${existingInvoice.invoiceNumber}` : ""}.`,
-      };
+      logEwaDebug({ ...debugBase, finalAmount: undefined }, candidateNotes);
+      return { status: "none", message: "EWA Bill already invoiced." };
     }
-    if (notChargeable.length > 0) {
+    if (landlordBills.length > 0) {
+      logEwaDebug({ ...debugBase, finalAmount: undefined }, candidateNotes);
       return {
         status: "none",
         message: "This unit's EWA share for this period is charged to the landlord.",
       };
     }
-    return { status: "none", message: "No EWA bill found for this unit and billing period." };
+    if (notChargeable.length > 0) {
+      logEwaDebug({ ...debugBase, finalAmount: undefined }, candidateNotes);
+      return { status: "none", message: "No EWA allocation found for this Unit." };
+    }
+    // Everything matched was another unit's per-unit bill (or otherwise not
+    // for this unit) — from this unit's perspective there is simply no bill.
+    logEwaDebug({ ...debugBase, finalAmount: undefined }, candidateNotes);
+    return { status: "none", message: "No EWA Bill found for this Unit and billing period." };
   }
 
   // Per-unit distribution bills are the most precise source — offer them first.
@@ -253,7 +371,14 @@ export function resolveEwaCharge(input: EwaLookupInput): EwaResolution {
     return a.bill.billNumber.localeCompare(b.bill.billNumber);
   });
 
-  if (available.length === 1) return { status: "ok", candidate: available[0] };
+  if (available.length === 1) {
+    logEwaDebug(
+      { ...debugBase, allocationAmount: available[0].share, finalAmount: available[0].share },
+      candidateNotes,
+    );
+    return { status: "ok", candidate: available[0] };
+  }
+  logEwaDebug({ ...debugBase, finalAmount: undefined }, candidateNotes);
   return { status: "choice", candidates: available };
 }
 

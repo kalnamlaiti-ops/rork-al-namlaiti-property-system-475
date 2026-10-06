@@ -7,8 +7,8 @@ import { Textarea } from "@/components/ui/textarea";
 import { useData, generateCode } from "@/context/DataContext";
 import { formatPeriodLabel } from "@/lib/invoiceGenerator";
 import {
-  classifyEwaBill,
   ewaLineDescription,
+  classifyEwaBill,
   findUnitEwaAccount,
   monthKeyOf,
   resolveEwaCharge,
@@ -70,15 +70,15 @@ export default function InvoiceForm({ initialData, onClose }: InvoiceFormProps) 
   });
 
   const [errors, setErrors] = useState<Record<string, string>>({});
-  /** Per-line messages: lookup problems shown under the line item. */
+  /** Per-line messages: the exact lookup failure shown under the line item. */
   const [ewaMessages, setEwaMessages] = useState<Record<string, string>>({});
   /** More than one EWA bill matches — let the user pick instead of guessing. */
   const [pendingPick, setPendingPick] = useState<{ lineId: string; candidates: EwaCandidate[] } | null>(null);
-  /** Line state before its type was switched to EWA (for revert on failure). */
-  const lineBeforeEwa = useRef<Record<string, InvoiceLineItem>>({});
 
-  // Lines that existed when the form opened keep working without re-lookup.
+  // Lines that existed when the form opened keep their values on failure.
   const preexistingLineIds = new Set((initialData?.lineItems ?? []).map((li) => li.id));
+  // Toast dedupe: the immediate lookup and the auto-retry can both fail.
+  const shownEwaMessages = useRef<Record<string, string>>({});
 
   const selectedLease = leases.find((l) => l.id === form.leaseId);
   const tenant = selectedLease ? getTenantById(selectedLease.tenantId) : undefined;
@@ -93,9 +93,13 @@ export default function InvoiceForm({ initialData, onClose }: InvoiceFormProps) 
       .filter((li) => li.type === "EWA" && li.id !== excludeLineId && li.ewaBillId)
       .map((li) => li.ewaBillId as string);
 
+  const forgetEwaMessage = (lineId: string) => {
+    delete shownEwaMessages.current[lineId];
+  };
+
   /** Fill an EWA line from a resolved bill — description, amount and linkage. */
   const fillEwaLine = (lineId: string, candidate: EwaCandidate) => {
-    delete lineBeforeEwa.current[lineId];
+    forgetEwaMessage(lineId);
     setForm((prev) => {
       const lease = leases.find((l) => l.id === prev.leaseId);
       const leaseUnit = lease ? getUnitById(lease.unitId) : undefined;
@@ -123,53 +127,53 @@ export default function InvoiceForm({ initialData, onClose }: InvoiceFormProps) 
       delete next[lineId];
       return next;
     });
-    setPendingPick(null);
-  };
-
-  /** Revert a fresh/edited row after a failed EWA lookup; keep saved lines visible. */
-  const revertEwaLine = (lineId: string): "removed" | "reverted" | "kept" => {
-    const savedEwaLine =
-      preexistingLineIds.has(lineId) &&
-      Boolean(initialData?.lineItems.some((li) => li.id === lineId && li.type === "EWA"));
-    if (savedEwaLine) {
-      // Never silently destroy a saved EWA charge — keep it and block saving
-      // until the user resolves the problem.
-      return "kept";
-    }
-    const before = lineBeforeEwa.current[lineId];
-    const wasFreshRow = !before || (!before.description && !before.amount && before.type !== "EWA");
-    setForm((prev) => ({
-      ...prev,
-      lineItems: wasFreshRow
-        ? prev.lineItems.filter((li) => li.id !== lineId)
-        : prev.lineItems.map((li) => (li.id === lineId ? before : li)),
-    }));
-    delete lineBeforeEwa.current[lineId];
-    return wasFreshRow ? "removed" : "reverted";
-  };
-
-  /** Failed lookup — no EWA line item is created; explain exactly why. */
-  const failEwaLine = (lineId: string, message: string) => {
     setPendingPick((p) => (p?.lineId === lineId ? null : p));
-    toast.error(message);
-    const outcome = revertEwaLine(lineId);
-    if (outcome === "kept") {
-      setEwaMessages((prev) => ({ ...prev, [lineId]: message }));
-    } else {
-      setEwaMessages((prev) => {
-        if (!(lineId in prev)) return prev;
-        const next = { ...prev };
-        delete next[lineId];
-        return next;
+  };
+
+  /**
+   * Failed lookup — the EWA row STAYS so the reason is visible and the lookup
+   * retries itself when the lease/billing period/EWA records change. The line
+   * is never silently left with a hidden 0: fresh lines are cleared and the
+   * exact reason is shown.
+   */
+  const failEwaLine = (lineId: string, message: string) => {
+    if (shownEwaMessages.current[lineId] !== message) {
+      shownEwaMessages.current[lineId] = message;
+      toast.error(message);
+    }
+    setPendingPick((p) => (p?.lineId === lineId ? null : p));
+    if (!preexistingLineIds.has(lineId)) {
+      setForm((prev) => {
+        const li = prev.lineItems.find((l) => l.id === lineId);
+        if (
+          !li ||
+          (li.description === "" &&
+            (Number(li.amount) || 0) === 0 &&
+            !li.ewaBillId &&
+            !li.ewaAccountId &&
+            !li.billingPeriod)
+        ) {
+          return prev;
+        }
+        // Clear anything a previous lookup filled — the old month's amount
+        // must never remain on an unresolved EWA line.
+        return {
+          ...prev,
+          lineItems: prev.lineItems.map((l) =>
+            l.id === lineId ? { id: l.id, description: "", amount: 0, type: "EWA" as const } : l,
+          ),
+        };
       });
     }
+    setEwaMessages((prev) => (prev[lineId] === message ? prev : { ...prev, [lineId]: message }));
   };
 
-  /** Run the automatic EWA lookup for one line (Lease → Unit → Account → Bill). */
-  const runEwa = (lineId: string, ctx?: { leaseId?: string; periodFrom?: string }) => {
+  /** Run the automatic EWA lookup for one line (Lease → Unit → Account → Bill → allocation). */
+  const runEwa = (lineId: string, usedIds?: string[]) => {
     const result = resolveEwaCharge({
-      leaseId: ctx?.leaseId ?? form.leaseId,
-      periodFrom: ctx?.periodFrom ?? form.periodFrom,
+      leaseId: form.leaseId,
+      periodFrom: form.periodFrom,
+      periodTo: form.periodTo,
       units,
       leases,
       tenants,
@@ -177,7 +181,7 @@ export default function InvoiceForm({ initialData, onClose }: InvoiceFormProps) 
       ewaBills,
       ewaDistributions,
       invoices,
-      usedBillIds: usedBillIdsFor(lineId),
+      usedBillIds: usedIds ?? usedBillIdsFor(lineId),
     });
     if (result.status === "ok") {
       fillEwaLine(lineId, result.candidate);
@@ -192,8 +196,9 @@ export default function InvoiceForm({ initialData, onClose }: InvoiceFormProps) 
     }
   };
 
+  /** Drop EWA linkage when the user switches a line away from EWA. */
   const clearEwaLine = (lineId: string) => {
-    delete lineBeforeEwa.current[lineId];
+    forgetEwaMessage(lineId);
     setPendingPick((p) => (p?.lineId === lineId ? null : p));
     setForm((prev) => ({
       ...prev,
@@ -210,45 +215,27 @@ export default function InvoiceForm({ initialData, onClose }: InvoiceFormProps) 
   };
 
   const update = (field: keyof typeof form, value: string | number | InvoiceLineItem[]) => {
-    setForm((prev) => ({ ...prev, [field]: value }));
+    const touchesChain = field === "leaseId" || field === "periodFrom" || field === "periodTo";
+    setForm((prev) => {
+      if (!touchesChain) return { ...prev, [field]: value };
+      // Lease or billing period changed: resolved EWA lines lose their old
+      // linkage (and old month's amount) and resolve again automatically.
+      let stripped = false;
+      const lineItems = prev.lineItems.map((li) => {
+        if (li.type === "EWA" && li.ewaBillId) {
+          stripped = true;
+          return { id: li.id, description: "", amount: 0, type: "EWA" as const };
+        }
+        return li;
+      });
+      return stripped ? { ...prev, [field]: value, lineItems } : { ...prev, [field]: value };
+    });
+    if (touchesChain) {
+      setPendingPick(null);
+      setEwaMessages((prev) => (Object.keys(prev).length ? {} : prev));
+    }
     if (errors[field]) {
       setErrors((prev) => ({ ...prev, [field]: "" }));
-    }
-    if (field === "periodFrom" || field === "leaseId") {
-      // Lease or billing period changed — re-run the automatic lookup for
-      // every existing EWA line against the new period.
-      const ewaLines = form.lineItems.filter((li) => li.type === "EWA");
-      const reIds = new Set(ewaLines.map((li) => li.id));
-      const used: string[] = form.lineItems
-        .filter((li) => li.type === "EWA" && li.ewaBillId && !reIds.has(li.id))
-        .map((li) => li.ewaBillId as string);
-      for (const li of ewaLines) {
-        const result = resolveEwaCharge({
-          leaseId: field === "leaseId" ? String(value) : form.leaseId,
-          periodFrom: field === "periodFrom" ? String(value) : form.periodFrom,
-          units,
-          leases,
-          tenants,
-          ewaAccounts,
-          ewaBills,
-          ewaDistributions,
-          invoices,
-          usedBillIds: used,
-        });
-        if (result.status === "ok") {
-          fillEwaLine(li.id, result.candidate);
-          used.push(result.candidate.bill.id);
-        } else if (result.status === "choice") {
-          setPendingPick({ lineId: li.id, candidates: result.candidates });
-          setEwaMessages((prev) => ({
-            ...prev,
-            [li.id]: "Multiple EWA bills match this unit and billing period — select one below.",
-          }));
-          break;
-        } else {
-          failEwaLine(li.id, result.message);
-        }
-      }
     }
   };
 
@@ -257,9 +244,6 @@ export default function InvoiceForm({ initialData, onClose }: InvoiceFormProps) 
     if (!line) return;
     if (field === "type") {
       const nextType = value as InvoiceLineItem["type"];
-      if (nextType === "EWA" && line.type !== "EWA") {
-        lineBeforeEwa.current[line.id] = line;
-      }
       setForm((prev) => ({
         ...prev,
         lineItems: prev.lineItems.map((li, i) => (i === index ? { ...li, type: nextType } : li)),
@@ -273,6 +257,7 @@ export default function InvoiceForm({ initialData, onClose }: InvoiceFormProps) 
       }
       return;
     }
+    if (field === "amount" && line.type === "EWA") return; // EWA amount is read-only
     setForm((prev) => ({
       ...prev,
       lineItems: prev.lineItems.map((li, i) => (i === index ? { ...li, [field]: value } : li)),
@@ -289,7 +274,7 @@ export default function InvoiceForm({ initialData, onClose }: InvoiceFormProps) 
   const removeLineItem = (index: number) => {
     const line = form.lineItems[index];
     if (!line) return;
-    delete lineBeforeEwa.current[line.id];
+    forgetEwaMessage(line.id);
     setPendingPick((p) => (p?.lineId === line.id ? null : p));
     setEwaMessages((prev) => {
       if (!(line.id in prev)) return prev;
@@ -317,20 +302,53 @@ export default function InvoiceForm({ initialData, onClose }: InvoiceFormProps) 
     if (!pendingPick) return;
     const lineId = pendingPick.lineId;
     setPendingPick(null);
-    const outcome = revertEwaLine(lineId);
-    if (outcome === "removed" || outcome === "reverted") {
+    if (!preexistingLineIds.has(lineId)) {
+      // Explicit cancel on a fresh row — remove it so it does not immediately
+      // re-offer the same choice.
+      forgetEwaMessage(lineId);
       setEwaMessages((prev) => {
         if (!(lineId in prev)) return prev;
         const next = { ...prev };
         delete next[lineId];
         return next;
       });
+      setForm((prev) => ({ ...prev, lineItems: prev.lineItems.filter((li) => li.id !== lineId) }));
     }
   };
 
+  // ── THE RESOLUTION ENGINE ────────────────────────────────────────────────
+  // Every EWA line without a linked bill resolves itself: on the dropdown
+  // change (immediate runEwa) AND again whenever anything in the chain
+  // changes — lease, billing period, or the EWA records. So "Category = EWA"
+  // first, "Period = September" after, still ends with the line filled.
+  const selectedUnitId = selectedLease?.unitId;
+  useEffect(() => {
+    const usedBase = form.lineItems
+      .filter((li) => li.type === "EWA" && li.ewaBillId)
+      .map((li) => li.ewaBillId as string);
+    for (const li of form.lineItems) {
+      if (li.type !== "EWA" || li.ewaBillId) continue;
+      if (pendingPick?.lineId === li.id) continue;
+      runEwa(li.id, usedBase);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    form.leaseId,
+    form.periodFrom,
+    form.periodTo,
+    form.lineItems,
+    pendingPick,
+    ewaBills,
+    ewaAccounts,
+    ewaDistributions,
+    units,
+    leases,
+    tenants,
+    invoices,
+  ]);
+
   // If the underlying EWA bill changes (edited/recalculated), the invoice EWA
   // amount follows the bill's allocation automatically.
-  const selectedUnitId = selectedLease?.unitId;
   useEffect(() => {
     if (!selectedUnitId) return;
     const leaseUnit = getUnitById(selectedUnitId);
@@ -357,6 +375,7 @@ export default function InvoiceForm({ initialData, onClose }: InvoiceFormProps) 
       });
       return changed ? { ...prev, lineItems } : prev;
     });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ewaBills, ewaAccounts, units, leases, tenants, ewaDistributions, selectedUnitId, getUnitById]);
 
   /** Derived warning for a linked bill that vanished or got invoiced elsewhere. */
@@ -556,10 +575,11 @@ export default function InvoiceForm({ initialData, onClose }: InvoiceFormProps) 
                 </div>
                 {isEwa && linkedBill && !warning && (
                   <p className="mt-1 text-xs text-emerald-700">
-                    Auto-filled from EWA bill {linkedBill.billNumber}
-                    {linkedAccount ? ` · Account ${linkedAccount.accountNumber}` : ""}
-                    {selectedUnit ? ` · Unit ${selectedUnit.unitNumber}` : ""}
-                    {` · ${formatPeriodLabel(monthKeyOf(linkedBill.month))}`} — allocated share, read-only.
+                    {`Auto-filled · EWA Account: ${linkedAccount?.accountNumber ?? "—"} · EWA Bill: ${formatPeriodLabel(
+                      monthKeyOf(linkedBill.month),
+                    )} (${linkedBill.billNumber}) · Unit: ${selectedUnit?.unitNumber ?? "—"} · Allocation: ${(
+                      Number(li.amount) || 0
+                    ).toFixed(3)} BHD`}
                   </p>
                 )}
                 {isEwa && message && <p className="mt-1 text-xs text-red-500">{message}</p>}

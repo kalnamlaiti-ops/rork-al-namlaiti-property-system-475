@@ -170,7 +170,26 @@ describe("EWA invoice lookup — Lease → Unit → EWA Account → EWA Bill →
     expect(result.message).toBe("EWA already added to this invoice.");
   });
 
-  it("blocks already-invoiced bills and names the invoice", () => {
+  it("shows the exact failure when the lease id does not resolve", () => {
+    const missing = resolveEwaCharge(lookupInput({ leaseId: "lease-gone" }));
+    expect(missing.status).toBe("none");
+    if (missing.status !== "none") return;
+    expect(missing.message).toBe("Lease could not be found.");
+
+    const none = resolveEwaCharge(lookupInput({ leaseId: "" }));
+    if (none.status !== "none") throw new Error("expected none");
+    expect(none.message).toBe("Select a lease first.");
+  });
+
+  it("shows the exact failure when the lease has no unit", () => {
+    const orphanLease = { id: "L-orph", unitId: "u-missing", tenantId: "t1", status: "Active" } as unknown as Lease;
+    const result = resolveEwaCharge(lookupInput({ leaseId: "L-orph", leases: [orphanLease] }));
+    expect(result.status).toBe("none");
+    if (result.status !== "none") return;
+    expect(result.message).toBe("Lease has no Unit.");
+  });
+
+  it("blocks already-invoiced bills", () => {
     const result = resolveEwaCharge(
       lookupInput({
         ewaBills: [manualBill({ status: "Invoiced", invoiceId: "inv9" })],
@@ -179,7 +198,7 @@ describe("EWA invoice lookup — Lease → Unit → EWA Account → EWA Bill →
     );
     expect(result.status).toBe("none");
     if (result.status !== "none") return;
-    expect(result.message).toBe("EWA bill already invoiced on INV-2026-000001.");
+    expect(result.message).toBe("EWA Bill already invoiced.");
   });
 
   it("reports no bill when the billing period has none", () => {
@@ -188,7 +207,7 @@ describe("EWA invoice lookup — Lease → Unit → EWA Account → EWA Bill →
     );
     expect(result.status).toBe("none");
     if (result.status !== "none") return;
-    expect(result.message).toBe("No EWA bill found for this unit and billing period.");
+    expect(result.message).toBe("No EWA Bill found for this Unit and billing period.");
   });
 
   it("treats another unit's per-unit bill as no bill for this unit", () => {
@@ -200,14 +219,42 @@ describe("EWA invoice lookup — Lease → Unit → EWA Account → EWA Bill →
     );
     expect(result.status).toBe("none");
     if (result.status !== "none") return;
-    expect(result.message).toBe("No EWA bill found for this unit and billing period.");
+    expect(result.message).toBe("No EWA Bill found for this Unit and billing period.");
   });
 
   it("reports when no EWA account is linked to the unit", () => {
     const result = resolveEwaCharge(lookupInput({ ewaAccounts: [] }));
     expect(result.status).toBe("none");
     if (result.status !== "none") return;
-    expect(result.message).toBe("No EWA account is linked to this unit.");
+    expect(result.message).toBe("No EWA Account linked to this Unit.");
+  });
+
+  it("reports when the bill exists but the unit's allocation is zero", () => {
+    const zeroPctAccount = {
+      ...account,
+      id: "acc-zero",
+      accountNumber: "0000000000",
+      allocationMethod: "percentage",
+      rules: [{ unitId: "u13", percentage: 0 }],
+    } as unknown as EWAAccount;
+    const result = resolveEwaCharge(
+      lookupInput({ ewaAccounts: [zeroPctAccount], ewaBills: [manualBill({ ewaAccountId: "acc-zero" })] }),
+    );
+    expect(result.status).toBe("none");
+    if (result.status !== "none") return;
+    expect(result.message).toBe("No EWA allocation found for this Unit.");
+  });
+
+  it("flags a vacant unit's landlord-charged share as not chargeable", () => {
+    // Unit 12 is vacant; the account charges vacant units to the landlord.
+    const cls = classifyEwaBill(manualBill(), "u12", account, {
+      units: baseData.units,
+      leases: baseData.leases.filter((l) => l.unitId !== "u12"),
+      tenants: baseData.tenants,
+      ewaDistributions: [],
+    });
+    expect(cls.chargeable).toBe(false);
+    expect(cls.landlord).toBe(true);
   });
 
   it("falls back to the unit's allocation when only the other unit's bill was distribution-created", () => {

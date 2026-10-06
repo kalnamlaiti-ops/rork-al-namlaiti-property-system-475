@@ -2247,7 +2247,7 @@ export const [DataProvider, useData] = createContextHook(() => {
   /** Company details used on invoice PDFs and email bodies. */
   const COMPANY_INFO = {
     name: "Al Namlaiti Property Management",
-    email: "namlity@gmail.com",
+    email: "namlaitiproperties@gmail.com",
     phone: "+973 17253953",
     address: "Manama, Kingdom of Bahrain",
   };

@@ -216,7 +216,7 @@ If you have any questions regarding this payment, please do not hesitate to cont
 
 Best regards,
 Al Namlaiti Property Management
-namlity@gmail.com
+namlaitiproperties@gmail.com
 +973 17253953`;
 
   if (!FUNCTIONS_URL) {

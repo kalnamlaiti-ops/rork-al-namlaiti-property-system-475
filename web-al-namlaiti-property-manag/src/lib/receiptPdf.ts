@@ -12,11 +12,11 @@ import type { Building, Invoice, Lease, Payment, Tenant, Unit } from "@/types";
 
 // ── Company header (from the uploaded receipt template) ──
 export const RECEIPT_COMPANY = {
-  name: "NAMLITY GENERAL TRADING EST.",
+  name: "NAMLITY GENERAL MANIGMINT",
   road: "Palace Road",
   tagline: "IMPORTERS & GENERAL MERCHANTS",
   tel: "Tel. : 17253953 (Office)",
-  email: "Email : namlity@gmail.com",
+  email: "Email : namlaitiproperties@gmail.com",
   poBox: "P.O.Box 673",
   city: "Manama",
   country: "Kingdom of Bahrain",

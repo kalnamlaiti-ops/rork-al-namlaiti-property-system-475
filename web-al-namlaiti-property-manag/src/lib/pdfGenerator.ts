@@ -20,7 +20,7 @@ export interface PdfContext {
   companyAddress: string;
 }
 
-const BHD = (n: number) => `${n.toFixed(2)} BHD`;
+const BHD = (n: number) => `${n.toFixed(3)} BHD`;
 
 /** Business terms for the payment status printed on the PDF. */
 const STATUS_LABELS: Record<string, string> = {
@@ -32,6 +32,14 @@ const STATUS_LABELS: Record<string, string> = {
   Overdue: "OVERDUE",
   Cancelled: "CANCELLED",
   Outstanding: "OUTSTANDING",
+};
+
+/** Business terms for the raw settlement payment status. */
+const SETTLEMENT_STATUS_LABELS: Record<string, string> = {
+  Unpaid: "UNPAID",
+  "Partially Paid": "PARTIALLY PAID",
+  Paid: "PAID",
+  Overpaid: "OVERPAID",
 };
 
 /** Generate and download a PDF for the given invoice. */
@@ -71,15 +79,16 @@ export function generateInvoicePdf(ctx: PdfContext): jsPDF {
   doc.setFontSize(10);
   doc.setFont("helvetica", "normal");
   // Payment status (business terms) — right-aligned on the same line.
+  // An overdue invoice with a partial payment shows BOTH terms, so the
+  // partial payment is never hidden behind the overdue label.
+  let statusLabel: string = STATUS_LABELS[displayInvoiceStatus(invoice, settlement)] ?? "—";
+  if (invoice.status === "Overdue" && settlement.paymentStatus !== "Unpaid") {
+    statusLabel = `${SETTLEMENT_STATUS_LABELS[settlement.paymentStatus] ?? "PARTIALLY PAID"} • OVERDUE`;
+  }
   doc.setFont("helvetica", "bold");
   doc.setFontSize(9);
   doc.setTextColor(90, 105, 125);
-  doc.text(
-    `PAYMENT STATUS: ${STATUS_LABELS[displayInvoiceStatus(invoice, settlement)] ?? "—"}`,
-    pageWidth - margin,
-    y + 4,
-    { align: "right" },
-  );
+  doc.text(`PAYMENT STATUS: ${statusLabel}`, pageWidth - margin, y + 4, { align: "right" });
   doc.setTextColor(20, 20, 20);
   doc.setFont("helvetica", "normal");
   y += 18;
@@ -139,69 +148,92 @@ export function generateInvoicePdf(ctx: PdfContext): jsPDF {
     y += 22;
   }
 
-  // ── Totals box ──
-  y += 10;
-  const boxX = pageWidth - margin - 220;
-  const boxW = 220;
+  // ── Totals box — clean 2-column financial summary ──
+  // Fixed label column (left) and right-aligned amount column (right).
+  // Every row occupies its own line with consistent spacing — labels and
+  // amounts can never overlap.
+  y += 12;
+  const boxY = y;
+  const boxX = pageWidth - margin - 260;
+  const boxW = 260;
   // Payment deduction rows (Paid / Balance Due) are shown whenever payments
   // exist — the PDF must never imply the tenant still owes the full total.
   const hasPayments = settlement.totalPaid > 0.0005;
-  const boxH = hasPayments ? 152 : 110;
-  doc.setDrawColor(200, 200, 200);
-  doc.setFillColor(250, 250, 252);
-  doc.rect(boxX, y, boxW, boxH, "FD");
 
-  let ty = y + 18;
+  const breakdown: { label: string; value: number }[] = [
+    { label: "Subtotal", value: invoice.rentAmount ?? invoice.amount },
+  ];
+  if (invoice.ewaAmount && invoice.ewaAmount > 0) breakdown.push({ label: "EWA Charges", value: invoice.ewaAmount });
+  if (invoice.maintenanceAmount && invoice.maintenanceAmount > 0)
+    breakdown.push({ label: "Maintenance", value: invoice.maintenanceAmount });
+  if (invoice.previousBalance && invoice.previousBalance > 0)
+    breakdown.push({ label: "Previous Balance", value: invoice.previousBalance });
+
+  const rowH = 20;
+  // Box height derived from the actual row layout so content always fits.
+  const boxH = breakdown.length * rowH + (hasPayments ? 124 : 66);
+  doc.setDrawColor(205, 210, 218);
+  doc.setFillColor(250, 250, 252);
+  doc.rect(boxX, boxY, boxW, boxH, "FD");
+
+  const labelX = boxX + 14;
+  const valueX = boxX + boxW - 14;
+  let ty = boxY + 18;
+
+  // Breakdown rows — label left, amount right, one line each.
+  doc.setFont("helvetica", "normal");
   doc.setFontSize(10);
-  doc.text("Subtotal:", boxX + 12, ty);
-  doc.text(BHD(invoice.rentAmount ?? invoice.amount), boxX + boxW - 12, ty, { align: "right" });
-  ty += 16;
-  if (invoice.ewaAmount && invoice.ewaAmount > 0) {
-    doc.text("EWA Charges:", boxX + 12, ty);
-    doc.text(BHD(invoice.ewaAmount), boxX + boxW - 12, ty, { align: "right" });
-    ty += 16;
-  }
-  if (invoice.maintenanceAmount && invoice.maintenanceAmount > 0) {
-    doc.text("Maintenance:", boxX + 12, ty);
-    doc.text(BHD(invoice.maintenanceAmount), boxX + boxW - 12, ty, { align: "right" });
-    ty += 16;
-  }
-  if (invoice.previousBalance && invoice.previousBalance > 0) {
-    doc.text("Previous Balance:", boxX + 12, ty);
-    doc.text(BHD(invoice.previousBalance), boxX + boxW - 12, ty, { align: "right" });
-    ty += 16;
+  for (const r of breakdown) {
+    doc.setTextColor(90, 96, 108);
+    doc.text(r.label, labelX, ty);
+    doc.setTextColor(20, 20, 20);
+    doc.text(BHD(r.value), valueX, ty, { align: "right" });
+    ty += rowH;
   }
 
   // Invoice total (original amount as issued — never modified by payments)
   ty += 4;
   doc.setFillColor(15, 41, 66);
-  doc.rect(boxX, ty - 4, boxW, 26, "F");
+  doc.rect(boxX, ty - 4, boxW, 30, "F");
   doc.setTextColor(255, 255, 255);
   doc.setFont("helvetica", "bold");
+  doc.setFontSize(11);
+  doc.text("INVOICE TOTAL", labelX, ty + 15);
   doc.setFontSize(12);
-  doc.text("INVOICE TOTAL", boxX + 12, ty + 14);
-  doc.text(BHD(settlement.originalAmount), boxX + boxW - 12, ty + 14, { align: "right" });
+  doc.text(BHD(settlement.originalAmount), valueX, ty + 15, { align: "right" });
   doc.setTextColor(20, 20, 20);
+  ty += 30;
 
-  // Payment deduction rows
+  // Payment deduction rows — each on its own line, never on the total bar.
   if (hasPayments) {
-    ty += 6;
+    ty += 12;
     doc.setFont("helvetica", "normal");
     doc.setFontSize(10);
-    doc.text("Paid:", boxX + 12, ty + 8);
+    doc.setTextColor(90, 96, 108);
+    doc.text("Paid", labelX, ty);
     doc.setTextColor(20, 130, 60);
-    doc.text(`−${BHD(settlement.totalPaid)}`, boxX + boxW - 12, ty + 8, { align: "right" });
-    ty += 18;
+    doc.text(`-${BHD(settlement.totalPaid)}`, valueX, ty, { align: "right" });
+    ty += rowH;
+
+    ty += 8;
+    doc.setDrawColor(205, 210, 218);
+    doc.setLineWidth(0.75);
+    doc.line(labelX, ty, valueX, ty);
+    doc.setLineWidth(1);
+    ty += 16;
+
+    // Balance Due — the most prominent amount: what the tenant owes now.
     doc.setFont("helvetica", "bold");
-    doc.setFontSize(11);
-    doc.setTextColor(180, 30, 30);
-    doc.text("BALANCE DUE", boxX + 12, ty + 8);
-    doc.text(BHD(settlement.remainingBalance), boxX + boxW - 12, ty + 8, { align: "right" });
+    doc.setFontSize(13);
+    const isSettled = settlement.remainingBalance <= 0.0005;
+    doc.setTextColor(isSettled ? 16 : 180, isSettled ? 130 : 30, isSettled ? 60 : 30);
+    doc.text("BALANCE DUE", labelX, ty);
+    doc.text(BHD(settlement.remainingBalance), valueX, ty, { align: "right" });
     doc.setTextColor(20, 20, 20);
   }
 
   // ── Payment instructions ──
-  y = ty + 40;
+  y = boxY + boxH + 32;
   doc.setFont("helvetica", "bold");
   doc.setFontSize(10);
   doc.text("Payment Instructions", margin, y);

@@ -1,11 +1,20 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { useData, generateCode } from "@/context/DataContext";
-import { formatPeriodLabel, toPeriodKey } from "@/lib/invoiceGenerator";
-import type { EWABill, Invoice, InvoiceLineItem } from "@/types";
+import { formatPeriodLabel } from "@/lib/invoiceGenerator";
+import {
+  classifyEwaBill,
+  ewaLineDescription,
+  findUnitEwaAccount,
+  monthKeyOf,
+  resolveEwaCharge,
+  type EwaCandidate,
+} from "@/lib/ewaInvoiceLookup";
+import type { Invoice, InvoiceLineItem } from "@/types";
 
 interface InvoiceFormProps {
   initialData?: Invoice;
@@ -14,10 +23,22 @@ interface InvoiceFormProps {
 
 const lineItemTypes: InvoiceLineItem["type"][] = ["Rent", "Service Charge", "EWA", "Other"];
 
-/** Result of resolving the EWA charge for a unit + billing period. */
-interface EwaLookupResult {
-  bill?: EWABill;
-  message?: string;
+/**
+ * Initial line items. Legacy invoices stored EWA linkage only at invoice
+ * level (ewaBillIds) — attach those bills to their EWA lines so the
+ * automatic recalculation works on them too.
+ */
+function initLineItems(initialData?: Invoice): InvoiceLineItem[] {
+  if (!initialData) {
+    return [{ id: "li-new", description: "Rent", amount: 0, type: "Rent" }];
+  }
+  const billIds = initialData.ewaBillIds ?? [];
+  const ewaLines = initialData.lineItems.filter((li) => li.type === "EWA");
+  return initialData.lineItems.map((li) => {
+    if (li.type !== "EWA" || li.ewaBillId) return { ...li };
+    const idx = ewaLines.findIndex((l) => l.id === li.id);
+    return { ...li, ...(billIds[idx] ? { ewaBillId: billIds[idx] } : {}) };
+  });
 }
 
 export default function InvoiceForm({ initialData, onClose }: InvoiceFormProps) {
@@ -26,11 +47,15 @@ export default function InvoiceForm({ initialData, onClose }: InvoiceFormProps) 
     updateInvoice,
     leases,
     invoices,
+    units,
+    tenants,
     ewaBills,
     ewaAccounts,
+    ewaDistributions,
     getTenantById,
     getUnitById,
     markEwaBillsInvoiced,
+    releaseEwaBills,
   } = useData();
   const isEdit = Boolean(initialData);
 
@@ -41,117 +66,143 @@ export default function InvoiceForm({ initialData, onClose }: InvoiceFormProps) 
     periodFrom: initialData?.periodFrom ?? new Date().toISOString().split("T")[0],
     periodTo: initialData?.periodTo ?? new Date().toISOString().split("T")[0],
     notes: initialData?.notes ?? "",
-    lineItems: initialData?.lineItems ?? [{ id: "li-new", description: "Rent", amount: 0, type: "Rent" as InvoiceLineItem["type"] }],
+    lineItems: initLineItems(initialData),
   });
 
   const [errors, setErrors] = useState<Record<string, string>>({});
-  /** EWA line id → the EWA bill it was filled from (for DB linking & duplicate prevention). */
-  const [ewaLineBills, setEwaLineBills] = useState<Record<string, string>>({});
-  /** EWA line id → lookup message when no valid EWA bill could be resolved. */
-  const [ewaLineMessages, setEwaLineMessages] = useState<Record<string, string>>({});
+  /** Per-line messages: lookup problems shown under the line item. */
+  const [ewaMessages, setEwaMessages] = useState<Record<string, string>>({});
+  /** More than one EWA bill matches — let the user pick instead of guessing. */
+  const [pendingPick, setPendingPick] = useState<{ lineId: string; candidates: EwaCandidate[] } | null>(null);
+  /** Line state before its type was switched to EWA (for revert on failure). */
+  const lineBeforeEwa = useRef<Record<string, InvoiceLineItem>>({});
 
   // Lines that existed when the form opened keep working without re-lookup.
   const preexistingLineIds = new Set((initialData?.lineItems ?? []).map((li) => li.id));
 
   const selectedLease = leases.find((l) => l.id === form.leaseId);
   const tenant = selectedLease ? getTenantById(selectedLease.tenantId) : undefined;
-  const unit = selectedLease ? getUnitById(selectedLease.unitId) : undefined;
+  const selectedUnit = selectedLease ? getUnitById(selectedLease.unitId) : undefined;
 
   const subtotal = form.lineItems.reduce((sum, li) => sum + (Number(li.amount) || 0), 0);
   const total = subtotal;
 
-  /**
-   * Resolve the EWA charge for a lease in a billing period:
-   * Lease → Unit → Linked EWA account → EWA bill for that period.
-   * The bill's amount IS the unit's allocated share (computed by the
-   * distribution) — it is never re-divided here.
-   */
-  const resolveEwaBill = (leaseId: string, periodKey: string, excludeLineId: string): EwaLookupResult => {
-    const lease = leases.find((l) => l.id === leaseId);
-    if (!lease) return { message: "Select a lease first." };
-    const leaseUnit = getUnitById(lease.unitId);
-    if (!leaseUnit) return { message: "No unit found for this lease." };
+  /** EWA bills claimed by other EWA lines on this invoice (duplicate guard). */
+  const usedBillIdsFor = (excludeLineId: string): string[] =>
+    form.lineItems
+      .filter((li) => li.type === "EWA" && li.id !== excludeLineId && li.ewaBillId)
+      .map((li) => li.ewaBillId as string);
 
-    const account = ewaAccounts.find((a) => a.status === "Active" && a.linkedUnitIds.includes(leaseUnit.id));
-    if (!account) return { message: "No EWA account is linked to this unit." };
-
-    // Bills already claimed by other EWA lines on this invoice can't be reused.
-    const usedOnOtherLines = Object.entries(ewaLineBills)
-      .filter(([lineId]) => lineId !== excludeLineId)
-      .map(([, billId]) => billId);
-
-    const candidates = ewaBills.filter(
-      (b) =>
-        (b.leaseId === lease.id || (!b.leaseId && b.unitId === leaseUnit.id)) &&
-        toPeriodKey(b.month) === periodKey,
-    );
-    if (candidates.length === 0) {
-      return { message: `No EWA bill found for this unit and billing period (${formatPeriodLabel(periodKey)}).` };
-    }
-
-    const available = candidates.find(
-      (b) => !b.invoiceId && b.status !== "Invoiced" && !usedOnOtherLines.includes(b.id),
-    );
-    if (!available) {
-      if (candidates.some((b) => usedOnOtherLines.includes(b.id))) {
-        return { message: "This EWA bill is already added to this invoice." };
-      }
-      const invoicedBill = candidates.find((b) => b.invoiceId || b.status === "Invoiced") ?? candidates[0];
-      const existingInvoice = invoicedBill.invoiceId
-        ? invoices.find((i) => i.id === invoicedBill.invoiceId)
-        : undefined;
+  /** Fill an EWA line from a resolved bill — description, amount and linkage. */
+  const fillEwaLine = (lineId: string, candidate: EwaCandidate) => {
+    delete lineBeforeEwa.current[lineId];
+    setForm((prev) => {
+      const lease = leases.find((l) => l.id === prev.leaseId);
+      const leaseUnit = lease ? getUnitById(lease.unitId) : undefined;
       return {
-        message: `EWA bill already invoiced${existingInvoice ? ` on ${existingInvoice.invoiceNumber}` : ""}.`,
-      };
-    }
-    return { bill: available };
-  };
-
-  /** Run the EWA lookup for one line item and fill (or clear) it accordingly. */
-  const applyEwaLookup = (lineId: string, ctx?: { leaseId?: string; periodKey?: string }) => {
-    const leaseId = ctx?.leaseId ?? selectedLease?.id ?? "";
-    const periodKey = ctx?.periodKey ?? toPeriodKey(form.periodFrom);
-    const result = resolveEwaBill(leaseId, periodKey, lineId);
-
-    setEwaLineMessages((prev) => ({ ...prev, [lineId]: result.message ?? "" }));
-    setEwaLineBills((prev) => {
-      const next = { ...prev };
-      if (result.bill) next[lineId] = result.bill.id;
-      else delete next[lineId];
-      return next;
-    });
-
-    if (result.bill) {
-      // Auto-populate description + the unit's allocated amount — never typed by hand.
-      const bill = result.bill;
-      setForm((prev) => ({
         ...prev,
         lineItems: prev.lineItems.map((li) =>
           li.id === lineId
             ? {
                 ...li,
-                description: `EWA — ${formatPeriodLabel(toPeriodKey(bill.month))}`,
-                amount: Number((bill.billAmount || 0).toFixed(3)),
+                type: "EWA" as const,
+                description: ewaLineDescription(candidate.bill),
+                amount: candidate.share,
+                ewaBillId: candidate.bill.id,
+                ewaAccountId: candidate.bill.ewaAccountId ?? candidate.account.id,
+                buildingId: leaseUnit?.buildingId ?? li.buildingId,
+                billingPeriod: monthKeyOf(candidate.bill.month),
               }
             : li,
         ),
-      }));
-    } else {
-      // No valid bill — leave the amount empty; validation blocks saving the line.
-      setForm((prev) => ({
-        ...prev,
-        lineItems: prev.lineItems.map((li) => (li.id === lineId ? { ...li, amount: 0 } : li)),
-      }));
-    }
-  };
-
-  const clearEwaLink = (lineId: string) => {
-    setEwaLineBills((prev) => {
+      };
+    });
+    setEwaMessages((prev) => {
+      if (!(lineId in prev)) return prev;
       const next = { ...prev };
       delete next[lineId];
       return next;
     });
-    setEwaLineMessages((prev) => {
+    setPendingPick(null);
+  };
+
+  /** Revert a fresh/edited row after a failed EWA lookup; keep saved lines visible. */
+  const revertEwaLine = (lineId: string): "removed" | "reverted" | "kept" => {
+    const savedEwaLine =
+      preexistingLineIds.has(lineId) &&
+      Boolean(initialData?.lineItems.some((li) => li.id === lineId && li.type === "EWA"));
+    if (savedEwaLine) {
+      // Never silently destroy a saved EWA charge — keep it and block saving
+      // until the user resolves the problem.
+      return "kept";
+    }
+    const before = lineBeforeEwa.current[lineId];
+    const wasFreshRow = !before || (!before.description && !before.amount && before.type !== "EWA");
+    setForm((prev) => ({
+      ...prev,
+      lineItems: wasFreshRow
+        ? prev.lineItems.filter((li) => li.id !== lineId)
+        : prev.lineItems.map((li) => (li.id === lineId ? before : li)),
+    }));
+    delete lineBeforeEwa.current[lineId];
+    return wasFreshRow ? "removed" : "reverted";
+  };
+
+  /** Failed lookup — no EWA line item is created; explain exactly why. */
+  const failEwaLine = (lineId: string, message: string) => {
+    setPendingPick((p) => (p?.lineId === lineId ? null : p));
+    toast.error(message);
+    const outcome = revertEwaLine(lineId);
+    if (outcome === "kept") {
+      setEwaMessages((prev) => ({ ...prev, [lineId]: message }));
+    } else {
+      setEwaMessages((prev) => {
+        if (!(lineId in prev)) return prev;
+        const next = { ...prev };
+        delete next[lineId];
+        return next;
+      });
+    }
+  };
+
+  /** Run the automatic EWA lookup for one line (Lease → Unit → Account → Bill). */
+  const runEwa = (lineId: string, ctx?: { leaseId?: string; periodFrom?: string }) => {
+    const result = resolveEwaCharge({
+      leaseId: ctx?.leaseId ?? form.leaseId,
+      periodFrom: ctx?.periodFrom ?? form.periodFrom,
+      units,
+      leases,
+      tenants,
+      ewaAccounts,
+      ewaBills,
+      ewaDistributions,
+      invoices,
+      usedBillIds: usedBillIdsFor(lineId),
+    });
+    if (result.status === "ok") {
+      fillEwaLine(lineId, result.candidate);
+    } else if (result.status === "choice") {
+      setPendingPick({ lineId, candidates: result.candidates });
+      setEwaMessages((prev) => ({
+        ...prev,
+        [lineId]: "Multiple EWA bills match this unit and billing period — select one below.",
+      }));
+    } else {
+      failEwaLine(lineId, result.message);
+    }
+  };
+
+  const clearEwaLine = (lineId: string) => {
+    delete lineBeforeEwa.current[lineId];
+    setPendingPick((p) => (p?.lineId === lineId ? null : p));
+    setForm((prev) => ({
+      ...prev,
+      lineItems: prev.lineItems.map((li) =>
+        li.id === lineId ? { id: li.id, description: li.description, amount: li.amount, type: li.type } : li,
+      ),
+    }));
+    setEwaMessages((prev) => {
+      if (!(lineId in prev)) return prev;
       const next = { ...prev };
       delete next[lineId];
       return next;
@@ -163,35 +214,69 @@ export default function InvoiceForm({ initialData, onClose }: InvoiceFormProps) 
     if (errors[field]) {
       setErrors((prev) => ({ ...prev, [field]: "" }));
     }
-    // Keep existing EWA lines valid when the billing period or lease changes —
-    // this only re-resolves lines the user explicitly added as EWA.
-    if (field === "periodFrom") {
-      const periodKey = toPeriodKey(String(value));
-      form.lineItems
-        .filter((li) => li.type === "EWA")
-        .forEach((li) => applyEwaLookup(li.id, { periodKey }));
-    }
-    if (field === "leaseId") {
-      form.lineItems
-        .filter((li) => li.type === "EWA")
-        .forEach((li) => applyEwaLookup(li.id, { leaseId: String(value) }));
+    if (field === "periodFrom" || field === "leaseId") {
+      // Lease or billing period changed — re-run the automatic lookup for
+      // every existing EWA line against the new period.
+      const ewaLines = form.lineItems.filter((li) => li.type === "EWA");
+      const reIds = new Set(ewaLines.map((li) => li.id));
+      const used: string[] = form.lineItems
+        .filter((li) => li.type === "EWA" && li.ewaBillId && !reIds.has(li.id))
+        .map((li) => li.ewaBillId as string);
+      for (const li of ewaLines) {
+        const result = resolveEwaCharge({
+          leaseId: field === "leaseId" ? String(value) : form.leaseId,
+          periodFrom: field === "periodFrom" ? String(value) : form.periodFrom,
+          units,
+          leases,
+          tenants,
+          ewaAccounts,
+          ewaBills,
+          ewaDistributions,
+          invoices,
+          usedBillIds: used,
+        });
+        if (result.status === "ok") {
+          fillEwaLine(li.id, result.candidate);
+          used.push(result.candidate.bill.id);
+        } else if (result.status === "choice") {
+          setPendingPick({ lineId: li.id, candidates: result.candidates });
+          setEwaMessages((prev) => ({
+            ...prev,
+            [li.id]: "Multiple EWA bills match this unit and billing period — select one below.",
+          }));
+          break;
+        } else {
+          failEwaLine(li.id, result.message);
+        }
+      }
     }
   };
 
   const updateLineItem = (index: number, field: keyof InvoiceLineItem, value: string | number) => {
-    const lineId = form.lineItems[index]?.id;
+    const line = form.lineItems[index];
+    if (!line) return;
+    if (field === "type") {
+      const nextType = value as InvoiceLineItem["type"];
+      if (nextType === "EWA" && line.type !== "EWA") {
+        lineBeforeEwa.current[line.id] = line;
+      }
+      setForm((prev) => ({
+        ...prev,
+        lineItems: prev.lineItems.map((li, i) => (i === index ? { ...li, type: nextType } : li)),
+      }));
+      // Selecting EWA is the trigger — the amount fills itself from the
+      // linked EWA bill's allocation for the invoice billing period.
+      if (nextType === "EWA") {
+        runEwa(line.id);
+      } else {
+        clearEwaLine(line.id);
+      }
+      return;
+    }
     setForm((prev) => ({
       ...prev,
       lineItems: prev.lineItems.map((li, i) => (i === index ? { ...li, [field]: value } : li)),
     }));
-    // Selecting EWA on a line triggers the automatic EWA lookup.
-    if (field === "type" && lineId) {
-      if (value === "EWA") {
-        applyEwaLookup(lineId);
-      } else {
-        clearEwaLink(lineId);
-      }
-    }
   };
 
   const addLineItem = () => {
@@ -202,12 +287,88 @@ export default function InvoiceForm({ initialData, onClose }: InvoiceFormProps) 
   };
 
   const removeLineItem = (index: number) => {
-    const lineId = form.lineItems[index]?.id;
-    setForm((prev) => ({
-      ...prev,
-      lineItems: prev.lineItems.filter((_, i) => i !== index),
-    }));
-    if (lineId) clearEwaLink(lineId);
+    const line = form.lineItems[index];
+    if (!line) return;
+    delete lineBeforeEwa.current[line.id];
+    setPendingPick((p) => (p?.lineId === line.id ? null : p));
+    setEwaMessages((prev) => {
+      if (!(line.id in prev)) return prev;
+      const next = { ...prev };
+      delete next[line.id];
+      return next;
+    });
+    setForm((prev) => ({ ...prev, lineItems: prev.lineItems.filter((li) => li.id !== line.id) }));
+  };
+
+  const pickCandidate = (candidate: EwaCandidate) => {
+    if (!pendingPick) return;
+    const lineId = pendingPick.lineId;
+    const usedElsewhere = form.lineItems.some(
+      (li) => li.type === "EWA" && li.id !== lineId && li.ewaBillId === candidate.bill.id,
+    );
+    if (usedElsewhere) {
+      toast.error("EWA already added to this invoice.");
+      return;
+    }
+    fillEwaLine(lineId, candidate);
+  };
+
+  const cancelPick = () => {
+    if (!pendingPick) return;
+    const lineId = pendingPick.lineId;
+    setPendingPick(null);
+    const outcome = revertEwaLine(lineId);
+    if (outcome === "removed" || outcome === "reverted") {
+      setEwaMessages((prev) => {
+        if (!(lineId in prev)) return prev;
+        const next = { ...prev };
+        delete next[lineId];
+        return next;
+      });
+    }
+  };
+
+  // If the underlying EWA bill changes (edited/recalculated), the invoice EWA
+  // amount follows the bill's allocation automatically.
+  const selectedUnitId = selectedLease?.unitId;
+  useEffect(() => {
+    if (!selectedUnitId) return;
+    const leaseUnit = getUnitById(selectedUnitId);
+    if (!leaseUnit) return;
+    setForm((prev) => {
+      let changed = false;
+      const lineItems = prev.lineItems.map((li) => {
+        if (li.type !== "EWA" || !li.ewaBillId || !li.billingPeriod) return li;
+        const bill = ewaBills.find((b) => b.id === li.ewaBillId);
+        if (!bill) return li;
+        const account =
+          ewaAccounts.find((a) => a.id === (bill.ewaAccountId ?? li.ewaAccountId)) ??
+          findUnitEwaAccount(leaseUnit.id, ewaAccounts);
+        if (!account) return li;
+        const cls = classifyEwaBill(bill, leaseUnit.id, account, { units, leases, tenants, ewaDistributions });
+        if (!cls.chargeable) return li;
+        const description = ewaLineDescription(bill);
+        const period = monthKeyOf(bill.month);
+        if (cls.share !== li.amount || description !== li.description || li.billingPeriod !== period) {
+          changed = true;
+          return { ...li, amount: cls.share, description, billingPeriod: period };
+        }
+        return li;
+      });
+      return changed ? { ...prev, lineItems } : prev;
+    });
+  }, [ewaBills, ewaAccounts, units, leases, tenants, ewaDistributions, selectedUnitId, getUnitById]);
+
+  /** Derived warning for a linked bill that vanished or got invoiced elsewhere. */
+  const lineWarning = (li: InvoiceLineItem): string | undefined => {
+    if (li.type !== "EWA" || !li.ewaBillId) return undefined;
+    const bill = ewaBills.find((b) => b.id === li.ewaBillId);
+    if (!bill) return "The linked EWA bill is no longer available — it may have been deleted.";
+    if (bill.invoiceId && bill.invoiceId !== initialData?.id) {
+      const inv = invoices.find((i) => i.id === bill.invoiceId);
+      return `EWA bill already invoiced${inv ? ` on ${inv.invoiceNumber}` : ""} — remove this EWA line.`;
+    }
+    return undefined;
   };
 
   const validate = () => {
@@ -215,13 +376,21 @@ export default function InvoiceForm({ initialData, onClose }: InvoiceFormProps) 
     if (!form.leaseId) next.leaseId = "Lease is required";
     if (!form.dueDate) next.dueDate = "Due date is required";
     if (form.lineItems.length === 0) next.lineItems = "Add at least one line item";
-    // Every EWA line must resolve to a real, un-invoiced EWA bill —
-    // invalid EWA items (no bill / already invoiced) can't be saved.
-    const invalidEwaLine = form.lineItems.find(
-      (li) => li.type === "EWA" && !preexistingLineIds.has(li.id) && !ewaLineBills[li.id],
-    );
-    if (invalidEwaLine) {
-      next.lineItems = ewaLineMessages[invalidEwaLine.id] ?? "EWA line item has no valid EWA bill.";
+    for (const li of form.lineItems) {
+      if (li.type !== "EWA") continue;
+      if (pendingPick?.lineId === li.id) {
+        next.lineItems = "Select the EWA bill to use for this line.";
+        break;
+      }
+      const problem = ewaMessages[li.id] ?? lineWarning(li);
+      if (problem) {
+        next.lineItems = problem;
+        break;
+      }
+      if (!li.ewaBillId) {
+        next.lineItems = "EWA line item has no valid EWA bill.";
+        break;
+      }
     }
     setErrors(next);
     return Object.keys(next).length === 0;
@@ -231,7 +400,7 @@ export default function InvoiceForm({ initialData, onClose }: InvoiceFormProps) 
     e.preventDefault();
     if (!validate()) return;
 
-    if (!selectedLease || !tenant || !unit) return;
+    if (!selectedLease || !tenant || !selectedUnit) return;
 
     const invoiceNumber = initialData?.invoiceNumber ?? generateCode("INV", invoices.length);
     const status = initialData?.status ?? "Draft";
@@ -242,18 +411,18 @@ export default function InvoiceForm({ initialData, onClose }: InvoiceFormProps) 
     const ewaAmount = sumByType("EWA");
     const maintenanceAmount = sumByType("Service Charge");
 
-    // Every EWA line stays linked to its EWA bill so the same charge can
-    // never be billed twice (already-invoiced bills are never linked here).
+    // Every EWA line stays linked to its actual EWA bill / account, so the
+    // same charge can never be billed twice.
     const lineEwaBillIds = form.lineItems
-      .filter((li) => li.type === "EWA" && ewaLineBills[li.id])
-      .map((li) => ewaLineBills[li.id]);
+      .filter((li) => li.type === "EWA" && li.ewaBillId)
+      .map((li) => li.ewaBillId as string);
     const ewaBillIds = [...new Set([...(initialData?.ewaBillIds ?? []), ...lineEwaBillIds])];
 
     const payload = {
       invoiceNumber,
       tenantId: tenant.id,
       leaseId: selectedLease.id,
-      unitId: unit.id,
+      unitId: selectedUnit.id,
       issueDate: form.invoiceDate,
       dueDate: form.dueDate,
       periodFrom: form.periodFrom,
@@ -271,19 +440,13 @@ export default function InvoiceForm({ initialData, onClose }: InvoiceFormProps) 
 
     if (initialData) {
       updateInvoice(initialData.id, payload);
+      // Bills whose EWA lines were removed during the edit become invoiceable again.
+      releaseEwaBills((initialData.ewaBillIds ?? []).filter((id) => !ewaBillIds.includes(id)));
     } else {
       const created = addInvoice(payload);
-      // Cascade (same as the automation path): mark the used EWA bills as
-      // Invoiced so they can never be billed twice.
       markEwaBillsInvoiced(ewaBillIds, created.id, created.invoiceNumber);
     }
     onClose();
-  };
-
-  const ewaAccountForLine = (lineId: string): string | undefined => {
-    const bill = ewaBills.find((b) => b.id === ewaLineBills[lineId]);
-    if (!bill) return undefined;
-    return ewaAccounts.find((a) => a.id === bill.ewaAccountId)?.accountNumber;
   };
 
   return (
@@ -346,9 +509,12 @@ export default function InvoiceForm({ initialData, onClose }: InvoiceFormProps) 
         <div className="space-y-3">
           {form.lineItems.map((li, idx) => {
             const isEwa = li.type === "EWA";
-            const ewaMessage = isEwa ? ewaLineMessages[li.id] : undefined;
-            const hasLinkedBill = Boolean(ewaLineBills[li.id]);
-            const accountNumber = isEwa ? ewaAccountForLine(li.id) : undefined;
+            const linkedBill = isEwa && li.ewaBillId ? ewaBills.find((b) => b.id === li.ewaBillId) : undefined;
+            const linkedAccount = linkedBill
+              ? ewaAccounts.find((a) => a.id === (linkedBill.ewaAccountId ?? li.ewaAccountId))
+              : undefined;
+            const warning = lineWarning(li);
+            const message = ewaMessages[li.id] ?? warning;
             return (
               <div key={li.id}>
                 <div className="grid gap-2 md:grid-cols-12 items-end">
@@ -388,13 +554,36 @@ export default function InvoiceForm({ initialData, onClose }: InvoiceFormProps) 
                     </Button>
                   </div>
                 </div>
-                {isEwa && hasLinkedBill && (
+                {isEwa && linkedBill && !warning && (
                   <p className="mt-1 text-xs text-emerald-700">
-                    Auto-filled from EWA bill{accountNumber ? ` · Account ${accountNumber}` : ""} — allocated share, not editable.
+                    Auto-filled from EWA bill {linkedBill.billNumber}
+                    {linkedAccount ? ` · Account ${linkedAccount.accountNumber}` : ""}
+                    {selectedUnit ? ` · Unit ${selectedUnit.unitNumber}` : ""}
+                    {` · ${formatPeriodLabel(monthKeyOf(linkedBill.month))}`} — allocated share, read-only.
                   </p>
                 )}
-                {isEwa && ewaMessage && (
-                  <p className="mt-1 text-xs text-red-500">{ewaMessage}</p>
+                {isEwa && message && <p className="mt-1 text-xs text-red-500">{message}</p>}
+                {pendingPick?.lineId === li.id && (
+                  <div className="mt-2 space-y-1 rounded-md border bg-muted/40 p-2">
+                    <p className="text-xs font-medium">Multiple EWA bills match — select one:</p>
+                    {pendingPick.candidates.map((c) => (
+                      <div
+                        key={c.bill.id}
+                        className="flex items-center justify-between gap-2 rounded border bg-background px-2 py-1.5"
+                      >
+                        <span className="text-xs">
+                          Bill {c.bill.billNumber} · {formatPeriodLabel(monthKeyOf(c.bill.month))} ·{" "}
+                          <strong>{c.share.toFixed(3)} BHD</strong> · due {c.bill.dueDate}
+                        </span>
+                        <Button type="button" size="sm" variant="outline" onClick={() => pickCandidate(c)}>
+                          Use
+                        </Button>
+                      </div>
+                    ))}
+                    <Button type="button" size="sm" variant="ghost" onClick={cancelPick}>
+                      Cancel
+                    </Button>
+                  </div>
                 )}
               </div>
             );

@@ -1463,6 +1463,37 @@ export const [DataProvider, useData] = createContextHook(() => {
     [sendUpdate, pushHistory],
   );
 
+  /**
+   * Release EWA bills after an invoice edit removed their EWA line — reverts
+   * the invoiced cascade (status "Pending", invoiceId cleared) so the bills
+   * become available for invoicing again. `invoiceId` is sent as null because
+   * the workspace patch merge runs over JSON, which drops undefined keys.
+   */
+  const releaseEwaBills = useCallback(
+    (billIds: string[]) => {
+      if (billIds.length === 0) return;
+      const names: string[] = [];
+      setData((prev) => {
+        for (const id of billIds) {
+          const existing = prev.ewaBills.find((b) => b.id === id);
+          if (existing) names.push(existing.billNumber);
+        }
+        return prev;
+      });
+      for (const id of billIds) {
+        sendUpdate("ewaBills", id, { status: "Pending", invoiceId: null } as unknown as Record<string, unknown>);
+      }
+      pushHistory({
+        action: "Edited",
+        entityType: "EWA Bill",
+        entityId: billIds[0],
+        entityName: names.join(", "),
+        summary: `${billIds.length} EWA bill(s)${names.length > 0 ? ` (${names.join(", ")})` : ""} released back to Pending — removed from their invoice`,
+      });
+    },
+    [sendUpdate, pushHistory],
+  );
+
   const deleteEWABill = useCallback(
     (id: string) => {
       let name = "EWA Bill";
@@ -3037,6 +3068,7 @@ export const [DataProvider, useData] = createContextHook(() => {
     addEWABill,
     updateEWABill,
     markEwaBillsInvoiced,
+    releaseEwaBills,
     deleteEWABill,
     addEWAAccount,
     updateEWAAccount,

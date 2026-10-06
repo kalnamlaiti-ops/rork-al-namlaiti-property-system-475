@@ -237,6 +237,15 @@ export interface InvoiceLineItem {
   description: string;
   amount: number;
   type: "Rent" | "Service Charge" | "EWA" | "Other";
+  // ── EWA linkage (set automatically when the line is filled from an EWA bill) ──
+  /** The actual EWA bill this charge comes from (never a generic charge). */
+  ewaBillId?: string;
+  /** Shared EWA account the bill belongs to. */
+  ewaAccountId?: string;
+  /** Building of the invoiced unit. */
+  buildingId?: string;
+  /** Billing month key (YYYY-MM) of the source EWA bill. */
+  billingPeriod?: string;
 }
 
 export interface Payment {

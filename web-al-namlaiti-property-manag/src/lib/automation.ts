@@ -236,6 +236,9 @@ export function recomputeInvoiceFromPayments(
     // Nothing paid (any more): reopen Paid/Partial invoices back to Sent;
     // leave Draft/Sent/Overdue as they are.
     status = invoice.status === "Paid" || invoice.status === "Partial" ? "Sent" : invoice.status;
+  } else if (paid > (invoice.amount || 0) + 0.0005) {
+    // Payments exceed the invoice total (explicitly accepted overpayment).
+    status = "Overpaid";
   } else if (balance <= 0) {
     status = "Paid";
   } else {

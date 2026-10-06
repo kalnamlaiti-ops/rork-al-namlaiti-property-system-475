@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { useData } from "@/context/DataContext";
+import { computeInvoiceSettlement, displayInvoiceStatus } from "@/lib/invoiceSettlement";
 import InvoiceForm from "@/components/forms/InvoiceForm";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
 import {
@@ -44,6 +45,7 @@ export default function Invoices() {
   const navigate = useNavigate();
   const {
     invoices,
+    payments,
     buildings,
     tenants,
     getTenantById,
@@ -80,9 +82,14 @@ export default function Invoices() {
   // invoices are mirrors of an original's remaining amount — excluded to
   // avoid double-counting.
   const billableInvoices = invoices.filter((i) => i.status !== "Cancelled" && !i.originalInvoiceId);
+  // Outstanding derives from the ACTUAL payment records (never stored
+  // balances) so a recorded partial payment reduces it immediately.
+  const outstanding = billableInvoices.reduce(
+    (sum, i) => sum + computeInvoiceSettlement(i, payments).remainingBalance,
+    0,
+  );
   const totalBilled = billableInvoices.reduce((sum, i) => sum + i.amount, 0);
-  const totalCollected = totalBilled - billableInvoices.reduce((sum, i) => sum + i.balance, 0);
-  const outstanding = billableInvoices.reduce((sum, i) => sum + i.balance, 0);
+  const totalCollected = totalBilled - outstanding;
   const overdueCount = invoices.filter((i) => i.status === "Overdue").length;
 
   const filtered = useMemo(() => {
@@ -289,7 +296,7 @@ export default function Invoices() {
                 <th className="px-4 py-3 text-left font-medium">Unit</th>
                 <th className="px-4 py-3 text-left font-medium">Due Date</th>
                 <th className="px-4 py-3 text-left font-medium">Amount</th>
-                <th className="px-4 py-3 text-left font-medium">Balance</th>
+                <th className="px-4 py-3 text-left font-medium">Amount Due</th>
                 <th className="px-4 py-3 text-left font-medium">Status</th>
                 <th className="px-4 py-3 text-left font-medium">Email</th>
                 <th className="px-4 py-3 text-right font-medium">Actions</th>
@@ -307,6 +314,8 @@ export default function Invoices() {
                   const tenant = getTenantById(i.tenantId);
                   const unit = getUnitById(i.unitId);
                   const building = unit ? getBuildingById(unit.buildingId) : undefined;
+                  const settlement = computeInvoiceSettlement(i, payments);
+                  const due = settlement.remainingBalance;
                   const isBusy = busyInvoiceId === i.id;
                   const isWaBusy = busyWhatsAppId === i.id;
                   return (
@@ -319,10 +328,10 @@ export default function Invoices() {
                       </td>
                       <td className="px-4 py-3">{format(new Date(i.dueDate), "dd/MM/yyyy")}</td>
                       <td className="px-4 py-3">{formatCurrency(i.amount)}</td>
-                      <td className={`px-4 py-3 font-medium ${i.balance > 0 ? "text-red-600" : "text-emerald-600"}`}>
-                        {formatCurrency(i.balance)}
+                      <td className={`px-4 py-3 font-medium ${due > 0.0005 ? "text-red-600" : "text-emerald-600"}`}>
+                        {formatCurrency(due)}
                       </td>
-                      <td className="px-4 py-3"><StatusBadge status={i.status} /></td>
+                      <td className="px-4 py-3"><StatusBadge status={displayInvoiceStatus(i, settlement)} /></td>
                       <td className="px-4 py-3">
                         <EmailBadge status={i.emailStatus} />
                       </td>
@@ -340,7 +349,7 @@ export default function Invoices() {
                           <Button variant="ghost" size="sm" onClick={() => handleDownload(i)} title="Download PDF">
                             <Download className="h-3.5 w-3.5" />
                           </Button>
-                          {i.balance > 0 && i.status !== "Cancelled" && (
+                          {due > 0.0005 && i.status !== "Cancelled" && (
                             <Button variant="ghost" size="sm" onClick={() => handleMarkPaid(i)} title="Mark Paid" className="text-emerald-600">
                               <CheckCircle className="h-3.5 w-3.5" />
                             </Button>

@@ -33,6 +33,7 @@ import {
 } from "lucide-react";
 import { format } from "date-fns";
 import { generateInvoicePdf, downloadInvoicePdf } from "@/lib/pdfGenerator";
+import { computeInvoiceSettlement, displayInvoiceStatus } from "@/lib/invoiceSettlement";
 import type { Invoice } from "@/types";
 
 function formatCurrency(amount: number) {
@@ -84,6 +85,12 @@ export default function InvoiceDetail() {
       </div>
     );
   }
+
+  // Payment-derived settlement — the source of truth for every amount shown
+  // on this page (paid, remaining, amount due, status).
+  const settlement = computeInvoiceSettlement(invoice, payments);
+  const displayStatus = displayInvoiceStatus(invoice, settlement);
+  const isFullyPaid = settlement.remainingBalance <= 0.0005;
 
   const handleSend = async () => {
     setSending(true);
@@ -183,10 +190,15 @@ export default function InvoiceDetail() {
               <Pencil className="mr-2 h-4 w-4" /> Edit
             </Button>
           )}
-          <Button variant="outline" onClick={() => setPaymentDialog(true)} disabled={isCancelled}>
-            <CreditCard className="mr-2 h-4 w-4" /> Record Payment
+          <Button
+            variant="outline"
+            onClick={() => setPaymentDialog(true)}
+            disabled={isCancelled || isFullyPaid}
+            title={isFullyPaid ? "Invoice Fully Paid" : undefined}
+          >
+            <CreditCard className="mr-2 h-4 w-4" /> {isFullyPaid ? "Invoice Fully Paid" : "Record Payment"}
           </Button>
-          {invoice.balance > 0 && !isCancelled && (
+          {settlement.remainingBalance > 0 && !isCancelled && (
             <Button variant="outline" onClick={handleMarkPaid} disabled={markingPaid} className="text-emerald-600">
               {markingPaid ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <CheckCircle className="mr-2 h-4 w-4" />} Mark Paid
             </Button>
@@ -206,7 +218,7 @@ export default function InvoiceDetail() {
 
       <div className="flex flex-wrap items-center gap-3">
         <h1 className="text-2xl font-bold text-foreground">{invoice.invoiceNumber}</h1>
-        <StatusBadge status={invoice.status} />
+        <StatusBadge status={displayStatus} />
         {invoice.generatedAutomatically && (
           <span className="rounded-full bg-blue-50 px-2 py-0.5 text-xs font-medium text-blue-600">Auto-generated</span>
         )}
@@ -291,9 +303,19 @@ export default function InvoiceDetail() {
               {(invoice.maintenanceAmount ?? 0) > 0 && <p>Maintenance: {formatCurrency(invoice.maintenanceAmount ?? 0)}</p>}
               {(invoice.otherExpensesAmount ?? 0) > 0 && <p>Other Expenses: {formatCurrency(invoice.otherExpensesAmount ?? 0)}</p>}
               {(invoice.previousBalance ?? 0) > 0 && <p>Previous Balance: {formatCurrency(invoice.previousBalance ?? 0)}</p>}
-              <p className="font-semibold text-lg">Total: {formatCurrency(invoice.amount)}</p>
-              <p className="text-emerald-600">Amount Paid: {formatCurrency(totalPaid)}</p>
-              <p className="text-red-600 font-semibold">Balance Due: {formatCurrency(invoice.balance)}</p>
+              <p className="font-semibold text-lg">Subtotal: {formatCurrency(settlement.originalAmount)}</p>
+              {settlement.totalPaid > 0 && (
+                <p className="font-medium text-emerald-600">Paid: −{formatCurrency(settlement.totalPaid)}</p>
+              )}
+              <div className="mt-2 flex items-center justify-end gap-4 rounded-lg bg-muted/60 px-4 py-3">
+                <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Amount Due</span>
+                <span className={`text-2xl font-bold ${settlement.remainingBalance > 0.0005 ? "text-red-600" : "text-emerald-600"}`}>
+                  {formatCurrency(settlement.remainingBalance)}
+                </span>
+              </div>
+              {settlement.overpaidAmount > 0.0005 && (
+                <p className="text-xs font-medium text-violet-600">Overpaid by {formatCurrency(settlement.overpaidAmount)}</p>
+              )}
               {originalInvoice && (
                 <p className="text-xs text-muted-foreground">
                   Balance invoice for{" "}

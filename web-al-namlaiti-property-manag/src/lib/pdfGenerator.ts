@@ -3,14 +3,17 @@
 // Produces a branded, print-ready PDF invoice with full breakdown.
 
 import { jsPDF } from "jspdf";
-import type { Building, Invoice, Tenant, Unit } from "@/types";
+import type { Building, Invoice, Payment, Tenant, Unit } from "@/types";
 import { formatPeriodLabel } from "./invoiceGenerator";
+import { computeInvoiceSettlement } from "./invoiceSettlement";
 
 export interface PdfContext {
   invoice: Invoice;
   tenant?: Tenant;
   unit?: Unit;
   building?: Building;
+  /** Payment records — used to show Paid / Balance Due on the PDF. */
+  payments?: Payment[];
   companyName: string;
   companyEmail: string;
   companyPhone: string;
@@ -112,9 +115,14 @@ export function generateInvoicePdf(ctx: PdfContext): jsPDF {
   y += 10;
   const boxX = pageWidth - margin - 220;
   const boxW = 220;
+  // Payment deduction rows (Paid / Balance Due) are shown whenever payments
+  // exist — the PDF must never imply the tenant still owes the full total.
+  const settlement = computeInvoiceSettlement(invoice, ctx.payments ?? []);
+  const hasPayments = settlement.totalPaid > 0.0005;
+  const boxH = hasPayments ? 152 : 110;
   doc.setDrawColor(200, 200, 200);
   doc.setFillColor(250, 250, 252);
-  doc.rect(boxX, y, boxW, 110, "FD");
+  doc.rect(boxX, y, boxW, boxH, "FD");
 
   let ty = y + 18;
   doc.setFontSize(10);
@@ -137,16 +145,33 @@ export function generateInvoicePdf(ctx: PdfContext): jsPDF {
     ty += 16;
   }
 
-  // Grand total
+  // Invoice total (original amount as issued — never modified by payments)
   ty += 4;
   doc.setFillColor(15, 41, 66);
   doc.rect(boxX, ty - 4, boxW, 26, "F");
   doc.setTextColor(255, 255, 255);
   doc.setFont("helvetica", "bold");
   doc.setFontSize(12);
-  doc.text("GRAND TOTAL", boxX + 12, ty + 14);
-  doc.text(BHD(invoice.amount), boxX + boxW - 12, ty + 14, { align: "right" });
+  doc.text("INVOICE TOTAL", boxX + 12, ty + 14);
+  doc.text(BHD(settlement.originalAmount), boxX + boxW - 12, ty + 14, { align: "right" });
   doc.setTextColor(20, 20, 20);
+
+  // Payment deduction rows
+  if (hasPayments) {
+    ty += 6;
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(10);
+    doc.text("Paid:", boxX + 12, ty + 8);
+    doc.setTextColor(20, 130, 60);
+    doc.text(`−${BHD(settlement.totalPaid)}`, boxX + boxW - 12, ty + 8, { align: "right" });
+    ty += 18;
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(11);
+    doc.setTextColor(180, 30, 30);
+    doc.text("BALANCE DUE", boxX + 12, ty + 8);
+    doc.text(BHD(settlement.remainingBalance), boxX + boxW - 12, ty + 8, { align: "right" });
+    doc.setTextColor(20, 20, 20);
+  }
 
   // ── Payment instructions ──
   y = ty + 40;

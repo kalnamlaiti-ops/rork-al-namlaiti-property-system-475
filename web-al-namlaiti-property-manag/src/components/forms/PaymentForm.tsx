@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -14,6 +14,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { useData } from "@/context/DataContext";
+import { computeInvoiceSettlement } from "@/lib/invoiceSettlement";
 import type { Payment } from "@/types";
 
 interface PaymentFormProps {
@@ -59,16 +60,28 @@ export default function PaymentForm({ initialData, preselectedInvoiceId, onClose
   const selectedInvoice = invoices.find((i) => i.id === form.invoiceId);
   const tenant = selectedInvoice ? getTenantById(selectedInvoice.tenantId) : undefined;
 
-  // Outstanding balance of the selected invoice. When editing, the payment's own
-  // current amount is already reflected in the invoice balance — add it back so
-  // the comparison shows what is actually available to allocate.
-  const outstanding = selectedInvoice ? Math.max(0, selectedInvoice.balance) : 0;
+  // Outstanding balance derived from the ACTUAL payment records — never a
+  // stored value — so it is always current. When editing, the payment's own
+  // current amount is already reflected in the computed outstanding — add it
+  // back so the comparison shows what is actually available to allocate.
+  const selectedSettlement = selectedInvoice ? computeInvoiceSettlement(selectedInvoice, payments) : undefined;
+  const outstanding = selectedSettlement ? selectedSettlement.remainingBalance : 0;
   const effectiveOutstanding =
     selectedInvoice && initialData && initialData.invoiceId === selectedInvoice.id
       ? outstanding + (initialData.amount || 0)
       : outstanding;
   const isOverpayment = Number(form.amount) > effectiveOutstanding + 0.0005;
   const remainingAfter = Math.max(0, outstanding - Number(form.amount || 0));
+
+  // Default the amount to the invoice's CURRENT remaining balance whenever a
+  // different invoice is selected (new payments only — edits keep their value).
+  const lastAutoFilledInvoice = useRef<string>("");
+  useEffect(() => {
+    if (isEdit || !selectedInvoice || selectedInvoice.id === lastAutoFilledInvoice.current) return;
+    lastAutoFilledInvoice.current = selectedInvoice.id;
+    const remaining = computeInvoiceSettlement(selectedInvoice, payments).remainingBalance;
+    setForm((prev) => ({ ...prev, amount: Number(remaining.toFixed(3)) }));
+  }, [isEdit, selectedInvoice, payments]);
 
   const update = (field: keyof typeof form, value: string | number) => {
     setForm((prev) => ({ ...prev, [field]: value }));
@@ -144,9 +157,10 @@ export default function PaymentForm({ initialData, preselectedInvoiceId, onClose
                 .filter((i) => !i.originalInvoiceId && i.status !== "Cancelled")
                 .map((i) => {
                   const t = getTenantById(i.tenantId);
+                  const due = computeInvoiceSettlement(i, payments).remainingBalance;
                   return (
                     <option key={i.id} value={i.id}>
-                      {i.invoiceNumber} — {t?.name} (Bal: {i.balance})
+                      {i.invoiceNumber} — {t?.name} (Due: BHD {due.toFixed(3)})
                     </option>
                   );
                 })}

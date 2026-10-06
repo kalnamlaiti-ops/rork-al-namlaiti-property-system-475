@@ -2,6 +2,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { StatusBadge } from "@/components/StatusBadge";
 import { useData } from "@/context/DataContext";
+import { computeInvoiceSettlement } from "@/lib/invoiceSettlement";
 import { Building2, Home, Users, FileText, AlertTriangle, CheckCircle2, Clock, MessageSquareWarning, ArrowRight, Receipt, Bookmark } from "lucide-react";
 import { Link } from "react-router-dom";
 import { format } from "date-fns";
@@ -11,7 +12,7 @@ function formatCurrency(amount: number) {
 }
 
 export default function Dashboard() {
-  const { buildings, units, leases, tenants, invoices, complaints, getTenantById, getUnitById, getBuildingById } = useData();
+  const { buildings, units, leases, tenants, invoices, payments, complaints, getTenantById, getUnitById, getBuildingById } = useData();
   const totalUnits = units.length;
   const occupied = units.filter((u) => u.status === "Occupied").length;
   const vacant = units.filter((u) => u.status === "Vacant").length;
@@ -30,16 +31,22 @@ export default function Dashboard() {
   // Cancelled invoices are void documents (balance forced to 0 on void) —
   // counting them would treat their original amount as "collected". Balance
   // invoices are mirrors of an original's remaining amount — counting them
-  // too would double-count the outstanding balance.
+  // too would double-count the outstanding balance. Every figure below
+  // derives from the ACTUAL payment records, never a stored balance.
   const billableInvoices = invoices.filter((i) => i.status !== "Cancelled" && !i.originalInvoiceId);
+  const outstanding = billableInvoices.reduce(
+    (sum, i) => sum + computeInvoiceSettlement(i, payments).remainingBalance,
+    0,
+  );
   const totalBilled = billableInvoices.reduce((sum, i) => sum + i.amount, 0);
-  const totalCollected = totalBilled - billableInvoices.reduce((sum, i) => sum + i.balance, 0);
-  const outstanding = billableInvoices.reduce((sum, i) => sum + i.balance, 0);
+  const totalCollected = totalBilled - outstanding;
   const partiallyPaidOutstanding = billableInvoices
-    .filter((i) => i.status === "Partial")
-    .reduce((sum, i) => sum + i.balance, 0);
+    .filter((i) => computeInvoiceSettlement(i, payments).paymentStatus === "Partially Paid")
+    .reduce((sum, i) => sum + computeInvoiceSettlement(i, payments).remainingBalance, 0);
   const overdueInvoices = invoices.filter((i) => i.status === "Overdue").length;
-  const overdueAmount = invoices.filter((i) => i.status === "Overdue").reduce((sum, i) => sum + i.balance, 0);
+  const overdueAmount = invoices
+    .filter((i) => i.status === "Overdue")
+    .reduce((sum, i) => sum + computeInvoiceSettlement(i, payments).remainingBalance, 0);
 
   const kpiCards = [
     { title: "Total Buildings", value: buildings.length, icon: Building2, color: "bg-indigo-100 text-indigo-600" },

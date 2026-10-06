@@ -2384,13 +2384,14 @@ export const [DataProvider, useData] = createContextHook(() => {
         tenant,
         unit,
         building,
+        payments: data.payments,
         companyName: COMPANY_INFO.name,
         companyEmail: COMPANY_INFO.email,
         companyPhone: COMPANY_INFO.phone,
         companyAddress: COMPANY_INFO.address,
       };
     },
-    [data.tenants, data.units, data.buildings],
+    [data.tenants, data.units, data.buildings, data.payments],
   );
 
   /** Send a single invoice via email (updates emailStatus). */

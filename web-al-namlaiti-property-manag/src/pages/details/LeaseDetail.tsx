@@ -14,6 +14,7 @@ import { buildLeaseDetailReport } from "@/lib/reportData";
 import { downloadReportPdf } from "@/lib/reportPdf";
 import type { ReportSection } from "@/lib/reportPdf";
 import { openReportPrintWindow } from "@/lib/reportPrint";
+import { computeInvoiceSettlement } from "@/lib/invoiceSettlement";
 import { toast } from "sonner";
 
 export default function LeaseDetail() {
@@ -226,8 +227,8 @@ export default function LeaseDetail() {
                     <tr key={i.id} className="hover:bg-muted/30">
                       <td className="px-4 py-3"><Link to={`/invoices/${i.id}`} className="font-medium text-primary hover:underline">{i.invoiceNumber}</Link></td>
                       <td className="px-4 py-3">{format(new Date(i.dueDate), "dd MMM yyyy")}</td>
-                      <td className="px-4 py-3">BHD {i.amount}</td>
-                      <td className="px-4 py-3">BHD {i.balance}</td>
+                      <td className="px-4 py-3">BHD {i.amount.toFixed(3)}</td>
+                      <td className="px-4 py-3">BHD {computeInvoiceSettlement(i, payments).remainingBalance.toFixed(3)}</td>
                       <td className="px-4 py-3"><StatusBadge status={i.status} /></td>
                     </tr>
                   ))}

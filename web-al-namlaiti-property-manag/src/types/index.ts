@@ -6,7 +6,7 @@ export type FurnishedType = "Furnished" | "Unfurnished" | "Semi-Furnished";
 export type TenantType = "Individual" | "Company";
 export type TenantStatus = "Active" | "Inactive";
 export type LeaseStatus = "Active" | "Expired" | "Terminating" | "Draft";
-export type InvoiceStatus = "Draft" | "Sent" | "Partial" | "Paid" | "Overdue" | "Cancelled" | "Outstanding";
+export type InvoiceStatus = "Draft" | "Sent" | "Partial" | "Paid" | "Overpaid" | "Overdue" | "Cancelled" | "Outstanding";
 export type EmailStatus = "Not Sent" | "Sent" | "Failed" | "Queued";
 
 // ── WhatsApp delivery ──

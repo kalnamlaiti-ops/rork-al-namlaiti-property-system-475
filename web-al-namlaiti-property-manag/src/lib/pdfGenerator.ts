@@ -5,7 +5,7 @@
 import { jsPDF } from "jspdf";
 import type { Building, Invoice, Payment, Tenant, Unit } from "@/types";
 import { formatPeriodLabel } from "./invoiceGenerator";
-import { computeInvoiceSettlement } from "./invoiceSettlement";
+import { computeInvoiceSettlement, displayInvoiceStatus } from "./invoiceSettlement";
 
 export interface PdfContext {
   invoice: Invoice;
@@ -22,9 +22,25 @@ export interface PdfContext {
 
 const BHD = (n: number) => `${n.toFixed(2)} BHD`;
 
+/** Business terms for the payment status printed on the PDF. */
+const STATUS_LABELS: Record<string, string> = {
+  Draft: "DRAFT",
+  Sent: "UNPAID",
+  Partial: "PARTIALLY PAID",
+  Paid: "PAID",
+  Overpaid: "OVERPAID",
+  Overdue: "OVERDUE",
+  Cancelled: "CANCELLED",
+  Outstanding: "OUTSTANDING",
+};
+
 /** Generate and download a PDF for the given invoice. */
 export function generateInvoicePdf(ctx: PdfContext): jsPDF {
   const { invoice, tenant, unit, building, companyName, companyEmail, companyPhone, companyAddress } = ctx;
+
+  // Payment-derived settlement — drives the status line and the
+  // Paid / Balance Due rows. Original amounts are never modified.
+  const settlement = computeInvoiceSettlement(invoice, ctx.payments ?? []);
 
   const doc = new jsPDF({ unit: "pt", format: "a4" });
   const pageWidth = doc.internal.pageSize.getWidth();
@@ -53,6 +69,18 @@ export function generateInvoicePdf(ctx: PdfContext): jsPDF {
   doc.setFontSize(16);
   doc.text(invoice.invoiceNumber, margin, y);
   doc.setFontSize(10);
+  doc.setFont("helvetica", "normal");
+  // Payment status (business terms) — right-aligned on the same line.
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(9);
+  doc.setTextColor(90, 105, 125);
+  doc.text(
+    `PAYMENT STATUS: ${STATUS_LABELS[displayInvoiceStatus(invoice, settlement)] ?? "—"}`,
+    pageWidth - margin,
+    y + 4,
+    { align: "right" },
+  );
+  doc.setTextColor(20, 20, 20);
   doc.setFont("helvetica", "normal");
   y += 18;
 
@@ -117,7 +145,6 @@ export function generateInvoicePdf(ctx: PdfContext): jsPDF {
   const boxW = 220;
   // Payment deduction rows (Paid / Balance Due) are shown whenever payments
   // exist — the PDF must never imply the tenant still owes the full total.
-  const settlement = computeInvoiceSettlement(invoice, ctx.payments ?? []);
   const hasPayments = settlement.totalPaid > 0.0005;
   const boxH = hasPayments ? 152 : 110;
   doc.setDrawColor(200, 200, 200);

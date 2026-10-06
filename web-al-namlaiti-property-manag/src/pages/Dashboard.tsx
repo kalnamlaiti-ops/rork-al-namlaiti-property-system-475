@@ -8,7 +8,12 @@ import { Link } from "react-router-dom";
 import { format } from "date-fns";
 
 function formatCurrency(amount: number) {
-  return new Intl.NumberFormat("en-BH", { style: "currency", currency: "BHD", maximumFractionDigits: 0 }).format(amount);
+  return new Intl.NumberFormat("en-BH", {
+    style: "currency",
+    currency: "BHD",
+    minimumFractionDigits: 3,
+    maximumFractionDigits: 3,
+  }).format(amount);
 }
 
 export default function Dashboard() {
@@ -47,6 +52,20 @@ export default function Dashboard() {
   const overdueAmount = invoices
     .filter((i) => i.status === "Overdue")
     .reduce((sum, i) => sum + computeInvoiceSettlement(i, payments).remainingBalance, 0);
+
+  // Finance cards — one consistent, minimal style with a subtle color accent.
+  const financeCards: { label: string; value: string; accent: string; sub?: string }[] = [
+    { label: "Total Invoiced", value: formatCurrency(totalBilled), accent: "border-l-slate-400" },
+    { label: "Total Collected", value: formatCurrency(totalCollected), accent: "border-l-emerald-500" },
+    { label: "Outstanding", value: formatCurrency(outstanding), accent: "border-l-orange-500" },
+    { label: "Partially Paid", value: formatCurrency(partiallyPaidOutstanding), accent: "border-l-amber-500" },
+    {
+      label: "Overdue",
+      value: formatCurrency(overdueAmount),
+      sub: `${overdueInvoices} invoice${overdueInvoices === 1 ? "" : "s"}`,
+      accent: "border-l-red-500",
+    },
+  ];
 
   const kpiCards = [
     { title: "Total Buildings", value: buildings.length, icon: Building2, color: "bg-indigo-100 text-indigo-600" },
@@ -197,36 +216,15 @@ export default function Dashboard() {
       </div>
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
-        <Card>
-          <CardContent className="p-5">
-            <p className="text-sm font-medium text-muted-foreground">Total Invoiced</p>
-            <p className="mt-2 text-2xl font-bold text-foreground">{formatCurrency(totalBilled)}</p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="p-5">
-            <p className="text-sm font-medium text-muted-foreground">Total Collected</p>
-            <p className="mt-2 text-2xl font-bold text-emerald-600">{formatCurrency(totalCollected)}</p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="p-5">
-            <p className="text-sm font-medium text-muted-foreground">Total Outstanding</p>
-            <p className="mt-2 text-2xl font-bold text-orange-600">{formatCurrency(outstanding)}</p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="p-5">
-            <p className="text-sm font-medium text-muted-foreground">Total Partially Paid</p>
-            <p className="mt-2 text-2xl font-bold text-amber-600">{formatCurrency(partiallyPaidOutstanding)}</p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="p-5">
-            <p className="text-sm font-medium text-muted-foreground">Overdue Invoices</p>
-            <p className="mt-2 text-2xl font-bold text-red-600">{overdueInvoices}</p>
-          </CardContent>
-        </Card>
+        {financeCards.map((c) => (
+          <Card key={c.label} className={`border-l-4 ${c.accent} shadow-sm`}>
+            <CardContent className="p-5">
+              <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">{c.label}</p>
+              <p className="mt-2 text-xl font-semibold tabular-nums text-foreground">{c.value}</p>
+              {c.sub && <p className="mt-1 text-xs text-muted-foreground">{c.sub}</p>}
+            </CardContent>
+          </Card>
+        ))}
       </div>
     </div>
   );

@@ -139,6 +139,20 @@ export default function PaymentForm({ initialData, preselectedInvoiceId, onClose
   return (
     <>
     <form onSubmit={handleSubmit} className="space-y-6">
+      {selectedSettlement && (
+        <div className="flex items-center justify-between rounded-lg border bg-muted/40 px-4 py-3">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Amount Due</p>
+            <p className="text-sm text-muted-foreground">
+              {selectedInvoice?.invoiceNumber}
+              {tenant ? ` — ${tenant.name}` : ""}
+            </p>
+          </div>
+          <p className={`text-2xl font-bold tabular-nums ${outstanding > 0.0005 ? "text-red-600" : "text-emerald-600"}`}>
+            {outstanding.toFixed(3)} BHD
+          </p>
+        </div>
+      )}
       <div className="rounded-lg border bg-card p-6">
         <div className="grid gap-4 md:grid-cols-2">
           <div className="space-y-2 md:col-span-2">

@@ -3,6 +3,16 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { useData } from "@/context/DataContext";
 import type { Payment } from "@/types";
 
@@ -30,6 +40,7 @@ export default function PaymentForm({ initialData, preselectedInvoiceId, onClose
   });
 
   const [errors, setErrors] = useState<Record<string, string>>({});
+  const [confirmOverpay, setConfirmOverpay] = useState(false);
 
   // Unique receipt number — RCP-<year>-<6 digits>, checked against every
   // existing payment so numbers are never duplicated.
@@ -48,6 +59,17 @@ export default function PaymentForm({ initialData, preselectedInvoiceId, onClose
   const selectedInvoice = invoices.find((i) => i.id === form.invoiceId);
   const tenant = selectedInvoice ? getTenantById(selectedInvoice.tenantId) : undefined;
 
+  // Outstanding balance of the selected invoice. When editing, the payment's own
+  // current amount is already reflected in the invoice balance — add it back so
+  // the comparison shows what is actually available to allocate.
+  const outstanding = selectedInvoice ? Math.max(0, selectedInvoice.balance) : 0;
+  const effectiveOutstanding =
+    selectedInvoice && initialData && initialData.invoiceId === selectedInvoice.id
+      ? outstanding + (initialData.amount || 0)
+      : outstanding;
+  const isOverpayment = Number(form.amount) > effectiveOutstanding + 0.0005;
+  const remainingAfter = Math.max(0, outstanding - Number(form.amount || 0));
+
   const update = (field: keyof typeof form, value: string | number) => {
     setForm((prev) => ({ ...prev, [field]: value }));
     if (errors[field]) {
@@ -65,9 +87,8 @@ export default function PaymentForm({ initialData, preselectedInvoiceId, onClose
     return Object.keys(next).length === 0;
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!validate() || !selectedInvoice || !tenant) return;
+  const submitPayment = () => {
+    if (!selectedInvoice || !tenant) return;
 
     const receiptNumber = initialData?.receiptNumber ?? generateUniqueReceiptNumber();
 
@@ -90,7 +111,20 @@ export default function PaymentForm({ initialData, preselectedInvoiceId, onClose
     onClose();
   };
 
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!validate() || !selectedInvoice || !tenant) return;
+    // Overpayment protection — paying more than the outstanding balance
+    // requires explicit confirmation before it is accepted.
+    if (isOverpayment) {
+      setConfirmOverpay(true);
+      return;
+    }
+    submitPayment();
+  };
+
   return (
+    <>
     <form onSubmit={handleSubmit} className="space-y-6">
       <div className="rounded-lg border bg-card p-6">
         <div className="grid gap-4 md:grid-cols-2">
@@ -104,14 +138,18 @@ export default function PaymentForm({ initialData, preselectedInvoiceId, onClose
               disabled={Boolean(preselectedInvoiceId) && !isEdit}
             >
               <option value="">Select invoice</option>
-              {invoices.map((i) => {
-                const t = getTenantById(i.tenantId);
-                return (
-                  <option key={i.id} value={i.id}>
-                    {i.invoiceNumber} — {t?.name} (Bal: {i.balance})
-                  </option>
-                );
-              })}
+              {invoices
+                // Balance invoices mirror an original's remaining amount — record
+                // payments on the original so nothing is double-counted.
+                .filter((i) => !i.originalInvoiceId && i.status !== "Cancelled")
+                .map((i) => {
+                  const t = getTenantById(i.tenantId);
+                  return (
+                    <option key={i.id} value={i.id}>
+                      {i.invoiceNumber} — {t?.name} (Bal: {i.balance})
+                    </option>
+                  );
+                })}
             </select>
             {errors.invoiceId && <p className="text-xs text-red-500">{errors.invoiceId}</p>}
           </div>
@@ -124,6 +162,11 @@ export default function PaymentForm({ initialData, preselectedInvoiceId, onClose
             <Label htmlFor="amount">Amount (BHD) *</Label>
             <Input id="amount" type="number" value={form.amount} onChange={(e) => update("amount", e.target.value)} />
             {errors.amount && <p className="text-xs text-red-500">{errors.amount}</p>}
+            {selectedInvoice && !errors.amount && (
+              <p className="text-xs text-muted-foreground">
+                Outstanding: BHD {outstanding.toFixed(3)} · Remaining after this payment: BHD {remainingAfter.toFixed(3)}
+              </p>
+            )}
           </div>
           <div className="space-y-2">
             <Label htmlFor="method">Payment Method *</Label>
@@ -167,5 +210,30 @@ export default function PaymentForm({ initialData, preselectedInvoiceId, onClose
         <Button type="submit">{isEdit ? "Save Changes" : "Record Payment"}</Button>
       </div>
     </form>
+
+    <AlertDialog open={confirmOverpay} onOpenChange={setConfirmOverpay}>
+      <AlertDialogContent className="max-w-md">
+        <AlertDialogHeader>
+          <AlertDialogTitle>Overpayment</AlertDialogTitle>
+          <AlertDialogDescription>
+            Payment exceeds the outstanding balance. Outstanding: BHD {effectiveOutstanding.toFixed(3)} — entered: BHD{" "}
+            {Number(form.amount || 0).toFixed(3)}. Do you want to accept this overpayment?
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogAction
+            onClick={() => {
+              setConfirmOverpay(false);
+              submitPayment();
+            }}
+            className="bg-amber-600 text-white hover:bg-amber-700"
+          >
+            Accept Overpayment
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+    </>
   );
 }

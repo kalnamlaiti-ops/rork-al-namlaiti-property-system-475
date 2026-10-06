@@ -6,7 +6,7 @@ export type FurnishedType = "Furnished" | "Unfurnished" | "Semi-Furnished";
 export type TenantType = "Individual" | "Company";
 export type TenantStatus = "Active" | "Inactive";
 export type LeaseStatus = "Active" | "Expired" | "Terminating" | "Draft";
-export type InvoiceStatus = "Draft" | "Sent" | "Partial" | "Paid" | "Overdue" | "Cancelled";
+export type InvoiceStatus = "Draft" | "Sent" | "Partial" | "Paid" | "Overdue" | "Cancelled" | "Outstanding";
 export type EmailStatus = "Not Sent" | "Sent" | "Failed" | "Queued";
 
 // ── WhatsApp delivery ──
@@ -223,6 +223,8 @@ export interface Invoice {
   journalEntryId?: string;
   // ── Metadata ──
   generatedAutomatically?: boolean;
+  /** Set on balance invoices — links the mirror to its original invoice. */
+  originalInvoiceId?: string;
   paymentInstructions?: string;
   // ── Linked charge IDs (for duplicate prevention & cascade) ──
   ewaBillIds?: string[];
@@ -255,6 +257,8 @@ export interface Payment {
   viaMarkPaid?: boolean;
   /** Invoice status immediately before the Mark Paid action (used by Undo Payment). */
   previousInvoiceStatus?: InvoiceStatus;
+  /** Label of the user who recorded this payment (e.g. "Guest-3f2a"). */
+  recordedBy?: string;
 }
 
 export interface Expense {

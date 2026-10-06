@@ -137,7 +137,9 @@ export function calculateInvoice(input: InvoiceCalculationInput): InvoiceCalcula
 
   // 5. Previous outstanding balance (unpaid invoices before this period)
   const previousBalance = previousInvoices
-    .filter((inv) => inv.leaseId === lease.id && inv.balance > 0 && inv.status !== "Cancelled" && inv.status !== "Draft")
+    // Balance invoices are mirrors of an original's remaining amount — never
+    // count them here or the outstanding balance would be double-counted.
+    .filter((inv) => inv.leaseId === lease.id && !inv.originalInvoiceId && inv.balance > 0 && inv.status !== "Cancelled" && inv.status !== "Draft")
     .reduce((sum, inv) => sum + inv.balance, 0);
   if (previousBalance > 0) {
     lineItems.push({

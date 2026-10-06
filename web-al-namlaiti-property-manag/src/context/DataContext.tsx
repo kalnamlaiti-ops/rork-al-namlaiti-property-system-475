@@ -1027,10 +1027,103 @@ export const [DataProvider, useData] = createContextHook(() => {
     [sendDelete, pushHistory],
   );
 
+  // ────────────────────────────── Balance invoices ──────────────────────────────
+  /**
+   * Keep exactly ONE active balance invoice per original invoice, mirroring its
+   * unpaid remaining balance ("Remaining Balance from Invoice INV-X"). Created
+   * automatically on the first partial payment, updated in place as further
+   * payments arrive, and settled (zeroed, Paid) when the original is fully paid.
+   * Balance invoices are mirrors — never generate mirrors of mirrors, and never
+   * touch the original invoice's total.
+   */
+  const syncBalanceInvoice = useCallback(
+    (original: Invoice, payments: Payment[]) => {
+      if (original.originalInvoiceId || original.status === "Cancelled") return;
+      const paid = payments
+        .filter((p) => p.invoiceId === original.id)
+        .reduce((s, p) => s + (p.amount || 0), 0);
+      const remaining = Math.max(0, (original.amount || 0) - paid);
+
+      const existing = data.invoices.find(
+        (i) =>
+          i.originalInvoiceId === original.id &&
+          i.status !== "Cancelled" &&
+          i.status !== "Paid",
+      );
+
+      if (remaining <= 0) {
+        if (existing && (existing.balance !== 0 || existing.status !== "Paid")) {
+          sendUpdate("invoices", existing.id, {
+            balance: 0,
+            status: "Paid",
+            notes: `Settled — ${original.invoiceNumber} fully paid`,
+          });
+          pushHistory({
+            action: "Edited" as HistoryAction,
+            entityType: "Invoice",
+            entityId: existing.id,
+            entityName: existing.invoiceNumber,
+            summary: `Balance invoice ${existing.invoiceNumber} settled — ${original.invoiceNumber} fully paid (BHD ${original.amount.toFixed(3)})`,
+          });
+        }
+        return;
+      }
+
+      if (existing) {
+        if (existing.amount !== remaining || existing.balance !== remaining) {
+          sendUpdate("invoices", existing.id, { amount: remaining, balance: remaining });
+          pushHistory({
+            action: "Edited" as HistoryAction,
+            entityType: "Invoice",
+            entityId: existing.id,
+            entityName: existing.invoiceNumber,
+            summary: `Balance invoice ${existing.invoiceNumber} updated — BHD ${existing.amount.toFixed(3)} → BHD ${remaining.toFixed(3)} (remaining on ${original.invoiceNumber})`,
+          });
+        }
+        return;
+      }
+
+      const mirrorCount = data.invoices.filter((i) => i.originalInvoiceId === original.id).length;
+      const balanceInvoice: Invoice = {
+        id: generateId("inv"),
+        invoiceNumber:
+          mirrorCount === 0 ? `${original.invoiceNumber}-B` : `${original.invoiceNumber}-B${mirrorCount + 1}`,
+        tenantId: original.tenantId,
+        leaseId: original.leaseId,
+        unitId: original.unitId,
+        issueDate: toISODate(new Date()),
+        dueDate: original.dueDate,
+        amount: remaining,
+        balance: remaining,
+        status: "Outstanding",
+        lineItems: [
+          {
+            id: generateId("li"),
+            description: `Remaining Balance from Invoice ${original.invoiceNumber}`,
+            amount: remaining,
+            type: "Other",
+          },
+        ],
+        notes: `Remaining Balance from Invoice ${original.invoiceNumber}`,
+        originalInvoiceId: original.id,
+        generatedAutomatically: true,
+      };
+      sendAdd("invoices", balanceInvoice);
+      pushHistory({
+        action: "Created" as HistoryAction,
+        entityType: "Invoice",
+        entityId: balanceInvoice.id,
+        entityName: balanceInvoice.invoiceNumber,
+        summary: `Balance invoice ${balanceInvoice.invoiceNumber} created — BHD ${remaining.toFixed(3)} remaining from ${original.invoiceNumber} (total BHD ${original.amount.toFixed(3)}, paid BHD ${paid.toFixed(3)})`,
+      });
+    },
+    [data.invoices, sendAdd, sendUpdate, pushHistory],
+  );
+
   // ────────────────────────────── Payments ──────────────────────────────
   const addPayment = useCallback(
     (payment: Omit<Payment, "id">) => {
-      const newPayment: Payment = { ...payment, id: generateId("p") };
+      const newPayment: Payment = { ...payment, id: generateId("p"), recordedBy: payment.recordedBy ?? actorRef.current };
       sendAdd("payments", newPayment);
 
       // ── Cascade: update invoice status, mark linked charges paid, post accounting ──
@@ -1064,13 +1157,19 @@ export const [DataProvider, useData] = createContextHook(() => {
             summary: `Auto-posted journal entry for payment ${newPayment.receiptNumber}`,
           });
         }
+        const invoicePatch = updates.find((u) => u.collection === "invoices" && u.kind === "update")?.patch as
+          | { balance?: number; status?: Invoice["status"] }
+          | undefined;
+        const newBalance = invoicePatch?.balance ?? invoice.balance;
         pushHistory({
           action: "Edited" as HistoryAction,
           entityType: "Invoice",
           entityId: invoice.id,
           entityName: invoice.invoiceNumber,
-          summary: `Invoice ${invoice.invoiceNumber} updated by payment ${newPayment.receiptNumber}`,
+          summary: `Payment ${newPayment.receiptNumber} — ${invoice.invoiceNumber} balance BHD ${invoice.balance.toFixed(3)} → BHD ${newBalance.toFixed(3)} (paid BHD ${newPayment.amount.toFixed(3)}), status ${invoicePatch?.status ?? invoice.status}`,
         });
+        // Keep the balance invoice (mirror of the remaining amount) in sync.
+        syncBalanceInvoice({ ...invoice, ...invoicePatch }, [...data.payments, newPayment]);
       }
 
       pushHistory({
@@ -1078,7 +1177,7 @@ export const [DataProvider, useData] = createContextHook(() => {
         entityType: "Payment",
         entityId: newPayment.id,
         entityName: newPayment.receiptNumber,
-        summary: `Payment "${newPayment.receiptNumber}" recorded — invoice & accounting auto-updated`,
+        summary: `Payment "${newPayment.receiptNumber}" of BHD ${newPayment.amount.toFixed(3)} recorded by ${newPayment.recordedBy}${invoice ? ` toward ${invoice.invoiceNumber}` : ""} — invoice & accounting auto-updated`,
       });
       toast.success(`Payment "${newPayment.receiptNumber}" recorded — invoice & accounting auto-updated`);
 
@@ -1092,7 +1191,7 @@ export const [DataProvider, useData] = createContextHook(() => {
 
       return newPayment;
     },
-    [sendAdd, pushHistory, sendUpdate, data.invoices, data.chartOfAccounts, data.journalEntries.length, data.tenants],
+    [sendAdd, pushHistory, sendUpdate, data.invoices, data.chartOfAccounts, data.journalEntries.length, data.tenants, syncBalanceInvoice],
   );
 
   const updatePayment = useCallback(
@@ -1129,17 +1228,34 @@ export const [DataProvider, useData] = createContextHook(() => {
       for (const [invId, result] of rebalance) {
         sendUpdate("invoices", invId, result as unknown as Record<string, unknown>);
       }
+      const rebalanceSummary = Array.from(rebalance.entries())
+        .map(([invId, r]) => {
+          const inv = data.invoices.find((i) => i.id === invId);
+          return inv ? `${inv.invoiceNumber} balance BHD ${inv.balance.toFixed(3)} → BHD ${r.balance.toFixed(3)}` : "";
+        })
+        .filter(Boolean)
+        .join("; ");
+      // Keep balance invoices (mirrors of remaining amounts) in sync.
+      for (const invId of rebalance.keys()) {
+        const inv = data.invoices.find((i) => i.id === invId);
+        if (inv) {
+          syncBalanceInvoice(
+            inv,
+            data.payments.map((p) => (p.id === id ? ({ ...p, ...updates, id } as Payment) : p)),
+          );
+        }
+      }
       pushHistory({
         action: "Edited",
         entityType: "Payment",
         entityId: id,
         entityName: name,
-        summary: `Payment "${name}" edited (${changes.length} field${changes.length === 1 ? "" : "s"} changed)${rebalance.size > 0 ? " — invoice balance(s) recalculated" : ""}`,
+        summary: `Payment "${name}" edited (${changes.length} field${changes.length === 1 ? "" : "s"} changed)${rebalanceSummary ? ` — ${rebalanceSummary}` : ""}`,
         changes,
       });
       toast.success("Payment updated");
     },
-    [sendUpdate, pushHistory],
+    [sendUpdate, pushHistory, data.invoices, data.payments, syncBalanceInvoice],
   );
 
   const deletePayment = useCallback(
@@ -1175,17 +1291,22 @@ export const [DataProvider, useData] = createContextHook(() => {
       if (rebalanceInvoiceId && rebalance) {
         sendUpdate("invoices", rebalanceInvoiceId, rebalance as unknown as Record<string, unknown>);
       }
+      const rebalancedInvoice = rebalanceInvoiceId ? data.invoices.find((i) => i.id === rebalanceInvoiceId) : undefined;
+      if (rebalancedInvoice && rebalance) {
+        // Keep the balance invoice (mirror of the remaining amount) in sync.
+        syncBalanceInvoice(rebalancedInvoice, data.payments.filter((p) => p.id !== id));
+      }
       pushHistory({
         action: "Deleted",
         entityType: "Payment",
         entityId: id,
         entityName: name,
-        summary: `Payment "${name}" deleted${rebalanceInvoiceId ? " — invoice balance recalculated" : ""}`,
+        summary: `Payment "${name}" deleted${rebalancedInvoice && rebalance ? ` — ${rebalancedInvoice.invoiceNumber} balance BHD ${rebalancedInvoice.balance.toFixed(3)} → BHD ${rebalance.balance.toFixed(3)}` : ""}`,
         snapshot,
       });
       toast.success("Payment deleted");
     },
-    [sendDelete, sendUpdate, pushHistory],
+    [sendDelete, sendUpdate, pushHistory, data.invoices, data.payments, syncBalanceInvoice],
   );
 
   // ────────────────────────────── Expenses ──────────────────────────────
@@ -2378,6 +2499,8 @@ export const [DataProvider, useData] = createContextHook(() => {
           : (autoPayment.previousInvoiceStatus ?? (rebalance ? rebalance.status : invoice.status));
       sendDelete("payments", autoPayment.id, autoPayment as unknown as Record<string, unknown>);
       sendUpdate("invoices", invoiceId, { balance, status });
+      // Re-sync the balance invoice mirror after the undo.
+      syncBalanceInvoice({ ...invoice, balance, status }, remainingPayments);
       pushHistory({
         action: "Edited" as HistoryAction,
         entityType: "Invoice",
@@ -2387,7 +2510,7 @@ export const [DataProvider, useData] = createContextHook(() => {
       });
       toast.success(`Payment ${autoPayment.receiptNumber} undone — invoice restored to ${status}`);
     },
-    [data.invoices, data.payments, sendUpdate, sendDelete, pushHistory],
+    [data.invoices, data.payments, sendUpdate, sendDelete, pushHistory, syncBalanceInvoice],
   );
 
   /** Mark invoice as Paid and post accounting + update balance. */
@@ -2419,6 +2542,9 @@ export const [DataProvider, useData] = createContextHook(() => {
         previousInvoiceStatus: invoice.status,
       };
       sendAdd("payments", payment);
+
+      // Keep the balance invoice (mirror of the remaining amount) in sync.
+      syncBalanceInvoice({ ...invoice, balance: newBalance, status: newStatus }, [...data.payments, payment]);
 
       pushHistory({
         action: "Edited" as HistoryAction,
@@ -2460,6 +2586,7 @@ export const [DataProvider, useData] = createContextHook(() => {
     let count = 0;
     data.invoices.forEach((inv) => {
       if (
+        !inv.originalInvoiceId &&
         (inv.status === "Sent" || inv.status === "Partial" || inv.status === "Draft") &&
         inv.balance > 0 &&
         new Date(inv.dueDate) < today

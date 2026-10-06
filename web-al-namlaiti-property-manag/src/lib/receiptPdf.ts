@@ -28,6 +28,8 @@ export interface ReceiptDataContext {
   units: Unit[];
   buildings: Building[];
   getTenantById: (id: string) => Tenant | undefined;
+  /** All payment records — used to compute paid amounts / remaining balances. */
+  payments?: Payment[];
 }
 
 export interface ReceiptInfo {
@@ -50,6 +52,16 @@ export interface ReceiptInfo {
   buildingLabel?: string;
   unitLabel?: string;
   contractLabel?: string;
+  /** "Invoice INV-2026-014" — set when the payment is linked to an invoice. */
+  invoiceNumberLabel?: string;
+  /** Original invoice total (3 decimals). */
+  invoiceTotalLabel?: string;
+  /** Total paid against the invoice so far (3 decimals). */
+  totalPaidLabel?: string;
+  /** Remaining balance on the invoice (3 decimals). */
+  remainingLabel?: string;
+  /** Invoice status in business terms ("Partially Paid", "Paid", …). */
+  statusLabel?: string;
 }
 
 /** Format an amount with exactly 3 decimals — Bahraini dinar / fils precision. */
@@ -110,6 +122,12 @@ export function resolveReceiptInfo(payment: Payment, ctx: ReceiptDataContext): R
     settlement = (payment.notes ?? "").split("\n")[0]?.trim() || "Rent Payment";
   }
 
+  // Balance summary — computed from the actual invoice + payment records.
+  const invoicePayments = invoice ? (ctx.payments ?? []).filter((p) => p.invoiceId === invoice.id) : [];
+  const totalPaid = invoicePayments.reduce((s, p) => s + (p.amount || 0), 0);
+  const invoiceRemaining = invoice ? Math.max(0, (invoice.amount || 0) - totalPaid) : 0;
+  const statusLabels: Record<string, string> = { Sent: "Unpaid", Partial: "Partially Paid" };
+
   return {
     receiptNumber: payment.receiptNumber,
     dateLabel: format(new Date(payment.paymentDate), "dd/MM/yyyy"),
@@ -124,6 +142,11 @@ export function resolveReceiptInfo(payment: Payment, ctx: ReceiptDataContext): R
     buildingLabel: building ? (building.buildingNumber || building.name) : undefined,
     unitLabel: unit?.unitNumber,
     contractLabel: lease?.contractNumber,
+    invoiceNumberLabel: invoice ? `Invoice ${invoice.invoiceNumber}` : undefined,
+    invoiceTotalLabel: invoice ? formatBhd3(invoice.amount) : undefined,
+    totalPaidLabel: invoice ? formatBhd3(totalPaid) : undefined,
+    remainingLabel: invoice ? formatBhd3(invoiceRemaining) : undefined,
+    statusLabel: invoice ? (statusLabels[invoice.status] ?? invoice.status) : undefined,
   };
 }
 
@@ -253,6 +276,17 @@ export function buildReceiptPdf(info: ReceiptInfo, autoPrint = false): jsPDF {
     doc.setFont("helvetica", "normal");
     doc.setFontSize(9);
     doc.text(propertyParts.join("      "), contentLeft + 6, fy - 8);
+  }
+
+  // ── Balance summary (computed from the actual payment records) ──
+  if (info.invoiceNumberLabel) {
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(9);
+    doc.text(
+      `${info.invoiceNumberLabel}   Total: ${info.invoiceTotalLabel}   Paid: ${info.totalPaidLabel}   Remaining: ${info.remainingLabel}   Status: ${info.statusLabel}`,
+      contentLeft + 6,
+      fy + 4,
+    );
   }
 
   // ── Signature + BD/Fils block (bottom left, like the template) ──

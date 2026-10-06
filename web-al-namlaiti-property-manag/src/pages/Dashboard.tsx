@@ -28,11 +28,16 @@ export default function Dashboard() {
   const openComplaints = complaints.filter((c) => c.status === "Open" || c.status === "In Progress").length;
 
   // Cancelled invoices are void documents (balance forced to 0 on void) —
-  // counting them would treat their original amount as "collected".
-  const billableInvoices = invoices.filter((i) => i.status !== "Cancelled");
+  // counting them would treat their original amount as "collected". Balance
+  // invoices are mirrors of an original's remaining amount — counting them
+  // too would double-count the outstanding balance.
+  const billableInvoices = invoices.filter((i) => i.status !== "Cancelled" && !i.originalInvoiceId);
   const totalBilled = billableInvoices.reduce((sum, i) => sum + i.amount, 0);
   const totalCollected = totalBilled - billableInvoices.reduce((sum, i) => sum + i.balance, 0);
   const outstanding = billableInvoices.reduce((sum, i) => sum + i.balance, 0);
+  const partiallyPaidOutstanding = billableInvoices
+    .filter((i) => i.status === "Partial")
+    .reduce((sum, i) => sum + i.balance, 0);
   const overdueInvoices = invoices.filter((i) => i.status === "Overdue").length;
   const overdueAmount = invoices.filter((i) => i.status === "Overdue").reduce((sum, i) => sum + i.balance, 0);
 
@@ -184,10 +189,10 @@ export default function Dashboard() {
         </Card>
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
         <Card>
           <CardContent className="p-5">
-            <p className="text-sm font-medium text-muted-foreground">Total Billed</p>
+            <p className="text-sm font-medium text-muted-foreground">Total Invoiced</p>
             <p className="mt-2 text-2xl font-bold text-foreground">{formatCurrency(totalBilled)}</p>
           </CardContent>
         </Card>
@@ -199,8 +204,14 @@ export default function Dashboard() {
         </Card>
         <Card>
           <CardContent className="p-5">
-            <p className="text-sm font-medium text-muted-foreground">Outstanding</p>
+            <p className="text-sm font-medium text-muted-foreground">Total Outstanding</p>
             <p className="mt-2 text-2xl font-bold text-orange-600">{formatCurrency(outstanding)}</p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="p-5">
+            <p className="text-sm font-medium text-muted-foreground">Total Partially Paid</p>
+            <p className="mt-2 text-2xl font-bold text-amber-600">{formatCurrency(partiallyPaidOutstanding)}</p>
           </CardContent>
         </Card>
         <Card>

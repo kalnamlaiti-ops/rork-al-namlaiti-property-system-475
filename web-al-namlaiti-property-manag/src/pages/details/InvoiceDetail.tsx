@@ -148,6 +148,14 @@ export default function InvoiceDetail() {
 
   const canEdit = invoice.status === "Draft" || invoice.status === "Sent";
   const isCancelled = invoice.status === "Cancelled";
+  // Balance invoices mirror this invoice's remaining amount; on a balance
+  // invoice, link back to the original.
+  const balanceInvoice = invoices.find(
+    (i) => i.originalInvoiceId === invoice.id && i.status !== "Cancelled" && i.status !== "Paid",
+  );
+  const originalInvoice = invoice.originalInvoiceId
+    ? invoices.find((i) => i.id === invoice.originalInvoiceId)
+    : undefined;
 
   return (
     <div className="space-y-6">
@@ -286,6 +294,23 @@ export default function InvoiceDetail() {
               <p className="font-semibold text-lg">Total: {formatCurrency(invoice.amount)}</p>
               <p className="text-emerald-600">Amount Paid: {formatCurrency(totalPaid)}</p>
               <p className="text-red-600 font-semibold">Balance Due: {formatCurrency(invoice.balance)}</p>
+              {originalInvoice && (
+                <p className="text-xs text-muted-foreground">
+                  Balance invoice for{" "}
+                  <Link to={`/invoices/${originalInvoice.id}`} className="text-primary hover:underline">
+                    {originalInvoice.invoiceNumber}
+                  </Link>
+                </p>
+              )}
+              {balanceInvoice && (
+                <p className="text-xs text-muted-foreground">
+                  Balance invoice:{" "}
+                  <Link to={`/invoices/${balanceInvoice.id}`} className="text-primary hover:underline">
+                    {balanceInvoice.invoiceNumber}
+                  </Link>{" "}
+                  (BHD {balanceInvoice.balance.toFixed(3)} outstanding)
+                </p>
+              )}
             </div>
 
             {invoice.paymentInstructions && (
@@ -304,16 +329,35 @@ export default function InvoiceDetail() {
               {invoicePayments.length === 0 ? (
                 <p className="text-sm text-muted-foreground">No payments recorded.</p>
               ) : (
-                <div className="space-y-3">
-                  {invoicePayments.map((p) => (
-                    <Link key={p.id} to={`/payments/${p.id}`} className="flex items-center justify-between rounded-lg bg-muted/50 p-3 hover:bg-muted/80">
-                      <div>
-                        <p className="font-medium">{p.receiptNumber}</p>
-                        <p className="text-xs text-muted-foreground">{format(new Date(p.paymentDate), "dd MMM yyyy")}</p>
-                      </div>
-                      <p className="font-semibold text-emerald-600">{formatCurrency(p.amount)}</p>
-                    </Link>
-                  ))}
+                <div className="overflow-x-auto rounded-lg border">
+                  <table className="w-full text-xs">
+                    <thead className="bg-muted/50 text-muted-foreground">
+                      <tr>
+                        <th className="px-2 py-2 text-left font-medium">Date</th>
+                        <th className="px-2 py-2 text-left font-medium">Receipt</th>
+                        <th className="px-2 py-2 text-right font-medium">Amount</th>
+                        <th className="px-2 py-2 text-left font-medium">Method</th>
+                        <th className="px-2 py-2 text-left font-medium">Ref.</th>
+                        <th className="px-2 py-2 text-left font-medium">Recorded By</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y">
+                      {invoicePayments.map((p) => (
+                        <tr key={p.id} className="hover:bg-muted/30">
+                          <td className="whitespace-nowrap px-2 py-2">{format(new Date(p.paymentDate), "dd MMM yyyy")}</td>
+                          <td className="px-2 py-2">
+                            <Link to={`/payments/${p.id}`} className="font-medium text-primary hover:underline">
+                              {p.receiptNumber}
+                            </Link>
+                          </td>
+                          <td className="px-2 py-2 text-right font-semibold text-emerald-600">{formatCurrency(p.amount)}</td>
+                          <td className="px-2 py-2">{p.method}</td>
+                          <td className="px-2 py-2 text-muted-foreground">{p.reference || "—"}</td>
+                          <td className="px-2 py-2 text-muted-foreground">{p.recordedBy || "—"}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
                 </div>
               )}
             </CardContent>

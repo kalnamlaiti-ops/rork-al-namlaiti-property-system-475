@@ -15,6 +15,7 @@ const statusStyles: Record<string, string> = {
   Paid: "bg-emerald-100 text-emerald-700 border-emerald-200",
   Sent: "bg-blue-100 text-blue-700 border-blue-200",
   Partial: "bg-amber-100 text-amber-700 border-amber-200",
+  Outstanding: "bg-orange-100 text-orange-700 border-orange-200",
   Overdue: "bg-red-100 text-red-700 border-red-200",
   Draft: "bg-slate-100 text-slate-600 border-slate-200",
   Cancelled: "bg-slate-100 text-slate-500 border-slate-200",
@@ -44,6 +45,13 @@ const statusStyles: Record<string, string> = {
   "Needs Regeneration": "bg-amber-100 text-amber-700 border-amber-200",
 };
 
+/** Display-only labels so invoice statuses read in business terms. */
+const statusLabels: Record<string, string> = {
+  Sent: "Unpaid",
+  Partial: "Partially Paid",
+  Outstanding: "Outstanding",
+};
+
 export function StatusBadge({ status, className }: StatusBadgeProps) {
   return (
     <span
@@ -53,7 +61,7 @@ export function StatusBadge({ status, className }: StatusBadgeProps) {
         className,
       )}
     >
-      {status}
+      {statusLabels[status] ?? status}
     </span>
   );
 }

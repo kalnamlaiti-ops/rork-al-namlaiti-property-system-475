@@ -35,6 +35,18 @@ export default function TenantDetail() {
     );
   }
 
+  // Account statement — every figure comes from the actual invoice & payment
+  // records (balance invoices are mirrors of originals and are excluded to
+  // avoid double-counting).
+  const statementRows = invoices
+    .filter((i) => i.tenantId === tenant.id && !i.originalInvoiceId && i.status !== "Cancelled")
+    .map((inv) => {
+      const invPayments = payments.filter((p) => p.invoiceId === inv.id);
+      const paid = invPayments.reduce((s, p) => s + (p.amount || 0), 0);
+      return { inv, paid, paymentsCount: invPayments.length, remaining: Math.max(0, inv.amount - paid) };
+    });
+  const statementOutstanding = statementRows.reduce((s, r) => s + r.remaining, 0);
+
   const reportTitle = `Tenant Report — ${tenant.name}`;
   const reportFileName = `tenant-report-${tenant.name.replace(/\s+/g, "-").toLowerCase()}.pdf`;
   const report = buildTenantDetailReport(tenant, { tenants, leases, units, buildings }, invoices, payments);
@@ -164,6 +176,52 @@ export default function TenantDetail() {
                     );
                   })}
                 </tbody>
+              </table>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardContent className="p-6">
+          <h3 className="mb-1 text-base font-semibold">Account Statement</h3>
+          <p className="mb-4 text-sm text-muted-foreground">Computed from the actual invoice and payment records.</p>
+          {statementRows.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No invoices recorded for this tenant.</p>
+          ) : (
+            <div className="overflow-x-auto rounded-lg border">
+              <table className="w-full text-sm">
+                <thead className="bg-muted/50 text-muted-foreground">
+                  <tr>
+                    <th className="px-4 py-3 text-left font-medium">Invoice</th>
+                    <th className="px-4 py-3 text-right font-medium">Invoice Total</th>
+                    <th className="px-4 py-3 text-right font-medium">Payments</th>
+                    <th className="px-4 py-3 text-right font-medium">Paid Amount</th>
+                    <th className="px-4 py-3 text-right font-medium">Remaining Balance</th>
+                    <th className="px-4 py-3 text-left font-medium">Status</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y">
+                  {statementRows.map(({ inv, paid, paymentsCount, remaining }) => (
+                    <tr key={inv.id} className="hover:bg-muted/30">
+                      <td className="px-4 py-3">
+                        <Link to={`/invoices/${inv.id}`} className="font-medium text-primary hover:underline">{inv.invoiceNumber}</Link>
+                      </td>
+                      <td className="px-4 py-3 text-right">BHD {inv.amount.toFixed(3)}</td>
+                      <td className="px-4 py-3 text-right text-muted-foreground">{paymentsCount}</td>
+                      <td className="px-4 py-3 text-right text-emerald-600">BHD {paid.toFixed(3)}</td>
+                      <td className="px-4 py-3 text-right font-semibold text-red-600">BHD {remaining.toFixed(3)}</td>
+                      <td className="px-4 py-3"><StatusBadge status={inv.status} /></td>
+                    </tr>
+                  ))}
+                </tbody>
+                <tfoot>
+                  <tr className="border-t bg-muted/50">
+                    <td className="px-4 py-3 font-semibold" colSpan={4}>Total Outstanding</td>
+                    <td className="px-4 py-3 text-right font-semibold text-red-600">BHD {statementOutstanding.toFixed(3)}</td>
+                    <td />
+                  </tr>
+                </tfoot>
               </table>
             </div>
           )}

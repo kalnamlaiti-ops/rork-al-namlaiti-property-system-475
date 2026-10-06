@@ -76,8 +76,10 @@ export default function Invoices() {
   const [sendingAllWa, setSendingAllWa] = useState(false);
 
   // Cancelled invoices are void documents (balance forced to 0 on void) —
-  // counting them would treat their original amount as "collected".
-  const billableInvoices = invoices.filter((i) => i.status !== "Cancelled");
+  // counting them would treat their original amount as "collected". Balance
+  // invoices are mirrors of an original's remaining amount — excluded to
+  // avoid double-counting.
+  const billableInvoices = invoices.filter((i) => i.status !== "Cancelled" && !i.originalInvoiceId);
   const totalBilled = billableInvoices.reduce((sum, i) => sum + i.amount, 0);
   const totalCollected = totalBilled - billableInvoices.reduce((sum, i) => sum + i.balance, 0);
   const outstanding = billableInvoices.reduce((sum, i) => sum + i.balance, 0);
@@ -262,8 +264,9 @@ export default function Invoices() {
           >
             <option value="All">All Statuses</option>
             <option value="Draft">Draft</option>
-            <option value="Sent">Sent</option>
-            <option value="Partial">Partial</option>
+            <option value="Sent">Unpaid (Sent)</option>
+            <option value="Partial">Partially Paid</option>
+            <option value="Outstanding">Outstanding</option>
             <option value="Paid">Paid</option>
             <option value="Overdue">Overdue</option>
             <option value="Cancelled">Cancelled</option>

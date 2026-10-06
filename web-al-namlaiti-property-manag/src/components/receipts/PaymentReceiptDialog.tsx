@@ -112,7 +112,7 @@ function ReceiptPreview({ info }: { info: ReceiptInfo }) {
 }
 
 export default function PaymentReceiptDialog({ payment, open, onOpenChange }: PaymentReceiptDialogProps) {
-  const { invoices, leases, units, buildings, getTenantById, updatePayment } = useData();
+  const { invoices, leases, units, buildings, payments, getTenantById, updatePayment } = useData();
   const [sendPanelOpen, setSendPanelOpen] = useState(false);
   const [sending, setSending] = useState<"whatsapp" | "email" | null>(null);
   const [sendResult, setSendResult] = useState<{ ok: boolean; message: string } | null>(null);
@@ -125,6 +125,7 @@ export default function PaymentReceiptDialog({ payment, open, onOpenChange }: Pa
         units,
         buildings,
         getTenantById,
+        payments,
       }),
     [payment, invoices, leases, units, buildings, getTenantById],
   );

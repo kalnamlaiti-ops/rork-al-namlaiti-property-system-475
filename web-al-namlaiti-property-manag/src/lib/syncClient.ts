@@ -17,6 +17,7 @@
 //   server sends a fresh snapshot so the server stays the source of truth.
 
 import type { DataStore } from "@/context/DataContext";
+import { getToken } from "./authClient";
 
 export type CollectionKey = keyof DataStore;
 
@@ -49,6 +50,8 @@ export interface SaveInfo {
 export type ServerMessageHandler = (msg: ServerMessage) => void;
 export type StatusHandler = (status: ConnectionStatus) => void;
 export type SaveInfoHandler = (info: SaveInfo) => void;
+/** Fired when the backend rejects the session (token expired/revoked). */
+export type UnauthorizedHandler = () => void;
 
 const BACKEND_URL =
   (import.meta.env.VITE_RORK_FUNCTIONS_URL as string | undefined) ??
@@ -70,13 +73,15 @@ export function backendHttpUrl(path: string): string {
 }
 
 /**
- * Resolve a stored fileUrl for direct use (window.open, link href).
- * Server-stored document URLs are relative ("/documents/{id}") and must be
- * prefixed with the backend origin; legacy data:/http URLs pass through.
+ * Resolve a stored fileUrl for direct use — appending the session token so
+ * protected backend documents open for signed-in users (window.open / <img>).
  */
 export function resolveFileUrl(url: string | undefined): string | undefined {
   if (!url) return url;
-  if (url.startsWith("/")) return `${BACKEND_URL}${url}`;
+  if (url.startsWith("/")) {
+    const token = getToken();
+    return `${BACKEND_URL}${url}${token ? `?token=${encodeURIComponent(token)}` : ""}`;
+  }
   return url;
 }
 
@@ -122,6 +127,7 @@ class SyncClient {
   private messageHandler: ServerMessageHandler | null = null;
   private statusHandler: StatusHandler | null = null;
   private saveInfoHandler: SaveInfoHandler | null = null;
+  private unauthorizedHandler: UnauthorizedHandler | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectDelay = 1000;
   private maxReconnectDelay = 15000;
@@ -151,6 +157,10 @@ class SyncClient {
     handler(this.getSaveInfo());
   }
 
+  setUnauthorizedHandler(handler: UnauthorizedHandler): void {
+    this.unauthorizedHandler = handler;
+  }
+
   getSaveInfo(): SaveInfo {
     return { pending: this.pending.size, failed: this.failed.size, lastError: this.lastError };
   }
@@ -175,7 +185,10 @@ class SyncClient {
 
     let ws: WebSocket;
     try {
-      ws = new WebSocket(this.wsUrl);
+      // The backend only sends the workspace snapshot to signed-in sessions.
+      const token = getToken();
+      const url = token ? `${this.wsUrl}?token=${encodeURIComponent(token)}` : this.wsUrl;
+      ws = new WebSocket(url);
     } catch {
       this.scheduleReconnect();
       return;
@@ -206,6 +219,9 @@ class SyncClient {
     ws.onclose = () => {
       this.ws = null;
       if (this.disposed) return;
+      // If we never got a snapshot, the session may have expired — have the
+      // app re-check it (a real network outage just keeps retrying below).
+      if (!this.hasSubscribed) this.unauthorizedHandler?.();
       this.statusHandler?.("reconnecting");
       this.scheduleReconnect();
     };

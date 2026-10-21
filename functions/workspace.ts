@@ -17,6 +17,68 @@
 
 import { DurableObject } from "cloudflare:workers";
 
+// ─────────────────────────── Users & sessions ───────────────────────────
+// User accounts live in their OWN SQLite tables — deliberately OUTSIDE the
+// broadcast JSON store — so password hashes and sessions are never included
+// in workspace snapshots or WebSocket messages sent to clients.
+
+export type UserRole = "Owner" | "Admin" | "Accountant" | "Staff";
+
+const ROLES: UserRole[] = ["Owner", "Admin", "Accountant", "Staff"];
+
+interface UserRow {
+  id: string;
+  email: string;
+  name: string;
+  role: string;
+  status: string;
+  salt: string;
+  hash: string;
+  isBootstrapOwner: number;
+  createdAt: string;
+}
+
+/** Public shape sent to clients — never includes salt/hash. */
+function publicUser(u: UserRow): {
+  id: string;
+  email: string;
+  name: string;
+  role: string;
+  status: string;
+  isBootstrapOwner: boolean;
+  createdAt: string;
+} {
+  return {
+    id: u.id,
+    email: u.email,
+    name: u.name,
+    role: u.role,
+    status: u.status,
+    isBootstrapOwner: u.isBootstrapOwner === 1,
+    createdAt: u.createdAt,
+  };
+}
+
+function randomSaltHex(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  return [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/** PBKDF2-SHA256, 100k iterations — computed server-side only. */
+async function hashPassword(password: string, saltHex: string): Promise<string> {
+  const enc = new TextEncoder();
+  const keyMaterial = await crypto.subtle.importKey("raw", enc.encode(password), "PBKDF2", false, ["deriveBits"]);
+  const salt = new Uint8Array(saltHex.match(/.{2}/g)!.map((h) => parseInt(h, 16)));
+  const bits = await crypto.subtle.deriveBits(
+    { name: "PBKDF2", hash: "SHA-256", salt, iterations: 100_000 },
+    keyMaterial,
+    256,
+  );
+  return [...new Uint8Array(bits)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+const SESSION_TTL_DAYS = 30;
+
 export interface DataStore {
   owners: unknown[];
   buildings: unknown[];
@@ -186,6 +248,28 @@ export class Workspace extends DurableObject<Env> {
         ts    TEXT NOT NULL
       )
     `);
+    // User accounts — separate from the broadcast store (hashes never sync).
+    this.ctx.storage.sql.exec(`
+      CREATE TABLE IF NOT EXISTS users (
+        id                TEXT PRIMARY KEY,
+        email             TEXT NOT NULL UNIQUE COLLATE NOCASE,
+        name              TEXT NOT NULL,
+        role              TEXT NOT NULL,
+        status            TEXT NOT NULL DEFAULT 'Active',
+        salt              TEXT NOT NULL,
+        hash              TEXT NOT NULL,
+        isBootstrapOwner  INTEGER NOT NULL DEFAULT 0,
+        createdAt         TEXT NOT NULL
+      )
+    `);
+    // Server-side sessions: random tokens, 30-day expiry.
+    this.ctx.storage.sql.exec(`
+      CREATE TABLE IF NOT EXISTS sessions (
+        token     TEXT PRIMARY KEY,
+        userId    TEXT NOT NULL,
+        expiresAt TEXT NOT NULL
+      )
+    `);
   }
 
   // ─────────────────────────── HTTP entry ───────────────────────────
@@ -198,19 +282,33 @@ export class Workspace extends DurableObject<Env> {
     // the 1 MiB WebSocket message limit). Only lightweight Document records
     // live in the shared store / WebSocket broadcast.
     if (request.headers.get("Upgrade") !== "websocket") {
+      // ── Auth endpoints (user accounts + sessions live outside the store) ──
+      if (url.pathname.startsWith("/auth/")) {
+        return this.handleAuthRequest(request, url);
+      }
+      // Document endpoints require a signed-in session.
       if (url.pathname === "/documents/upload" && request.method === "POST") {
+        const user = await this.getUserFromRequest();
+        if (!user) return Response.json({ ok: false, error: "authentication required" }, { status: 401 });
         return this.handleDocumentUpload(request);
       }
       const docMatch = url.pathname.match(/^\/documents\/([^/]+)$/);
       if (request.method === "GET" && docMatch) {
+        const user = await this.getUserFromRequest();
+        if (!user) return new Response("authentication required", { status: 401 });
         return this.serveDocument(docMatch[1], url.searchParams.get("download") === "1");
       }
-      // ── HTTP endpoint for WhatsApp webhook status updates ──
-      // The Worker parses Meta's webhook payload and forwards status updates here.
+      // ── HTTP endpoint for WhatsApp webhook status updates (open — Meta calls it) ──
       if (request.method === "POST") {
         return this.handleWebhookStatus(request);
       }
       return new Response("expected websocket", { status: 426 });
+    }
+    // ── WebSocket upgrades require a signed-in session ──
+    // No valid token → the data snapshot is never sent to this client.
+    const wsUser = await this.getUserFromRequest();
+    if (!wsUser) {
+      return new Response("authentication required", { status: 401 });
     }
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair);
@@ -230,6 +328,372 @@ export class Workspace extends DurableObject<Env> {
     });
 
     return new Response(null, { status: 101, webSocket: client });
+  }
+
+  // ─────────────────────────── Auth: users & sessions ───────────────────────────
+
+  /** Extract the session user from a Bearer header or ?token= query param. */
+  private getUserFromRequest(request: Request): UserRow | null {
+    const url = new URL(request.url);
+    let token = url.searchParams.get("token") ?? "";
+    const auth = request.headers.get("Authorization");
+    if (auth && auth.startsWith("Bearer ")) token = auth.slice(7).trim();
+    if (!token) return null;
+    const rows = this.ctx.storage.sql
+      .exec<{
+        id: string;
+        email: string;
+        name: string;
+        role: string;
+        status: string;
+        isBootstrapOwner: number;
+        createdAt: string;
+        expiresAt: string;
+      }>(
+        `SELECT u.id, u.email, u.name, u.role, u.status, u.isBootstrapOwner, u.createdAt, s.expiresAt
+           FROM sessions s JOIN users u ON u.id = s.userId
+          WHERE s.token = ?`,
+        token,
+      )
+      .toArray();
+    const row = rows[0];
+    if (!row) return null;
+    if (row.expiresAt < new Date().toISOString()) {
+      this.ctx.storage.sql.exec("DELETE FROM sessions WHERE token = ?", token);
+      return null;
+    }
+    if (row.status !== "Active") return null;
+    return {
+      id: row.id,
+      email: row.email,
+      name: row.name,
+      role: row.role,
+      status: row.status,
+      salt: "",
+      hash: "",
+      isBootstrapOwner: row.isBootstrapOwner,
+      createdAt: row.createdAt,
+    };
+  }
+
+  private async createSession(userId: string): Promise<{ token: string; expiresAt: string }> {
+    const token = `${crypto.randomUUID()}${randomSaltHex()}`;
+    const expiresAt = new Date(Date.now() + SESSION_TTL_DAYS * 24 * 60 * 60 * 1000).toISOString();
+    this.ctx.storage.sql.exec(
+      "INSERT INTO sessions (token, userId, expiresAt) VALUES (?, ?, ?)",
+      token,
+      userId,
+      expiresAt,
+    );
+    // Housekeeping: drop expired sessions.
+    this.ctx.storage.sql.exec("DELETE FROM sessions WHERE expiresAt < ?", new Date().toISOString());
+    return { token, expiresAt };
+  }
+
+  private countActiveOwners(excludeUserId: string): number {
+    const rows = this.ctx.storage.sql
+      .exec<{ n: number }>(
+        "SELECT COUNT(*) AS n FROM users WHERE role = 'Owner' AND status = 'Active' AND id != ?",
+        excludeUserId,
+      )
+      .toArray();
+    return rows[0]?.n ?? 0;
+  }
+
+  private async handleAuthRequest(request: Request, url: URL): Promise<Response> {
+    const path = url.pathname;
+    try {
+      if (path === "/auth/has-users" && request.method === "GET") {
+        const rows = this.ctx.storage.sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM users").toArray();
+        return Response.json({ ok: true, hasUsers: (rows[0]?.n ?? 0) > 0 });
+      }
+
+      if (path === "/auth/signup" && request.method === "POST") {
+        return this.handleSignup(request);
+      }
+
+      if (path === "/auth/login" && request.method === "POST") {
+        return this.handleLogin(request);
+      }
+
+      if (path === "/auth/logout" && request.method === "POST") {
+        const url2 = new URL(request.url);
+        let token = url2.searchParams.get("token") ?? "";
+        const auth = request.headers.get("Authorization");
+        if (auth && auth.startsWith("Bearer ")) token = auth.slice(7).trim();
+        if (token) this.ctx.storage.sql.exec("DELETE FROM sessions WHERE token = ?", token);
+        return Response.json({ ok: true });
+      }
+
+      // Everything below requires a signed-in session.
+      const user = await this.getUserFromRequest(request);
+      if (!user) return Response.json({ ok: false, error: "authentication required" }, { status: 401 });
+
+      if (path === "/auth/me" && request.method === "GET") {
+        return Response.json({ ok: true, user: publicUser(user) });
+      }
+
+      if (path === "/auth/change-password" && request.method === "POST") {
+        return this.handleChangePassword(request, user);
+      }
+
+      // ── User management — Owner only ──
+      if (user.role !== "Owner") {
+        return Response.json({ ok: false, error: "Only the Owner can manage user accounts." }, { status: 403 });
+      }
+
+      if (path === "/auth/users" && request.method === "GET") {
+        const rows = this.ctx.storage.sql
+          .exec<UserRow>("SELECT * FROM users ORDER BY createdAt ASC")
+          .toArray()
+          .map(publicUser);
+        return Response.json({ ok: true, users: rows });
+      }
+
+      if (path === "/auth/users" && request.method === "POST") {
+        return this.handleCreateUser(request);
+      }
+
+      const idMatch = path.match(/^\/auth\/users\/([^/]+)$/);
+      if (idMatch && request.method === "PATCH") {
+        return this.handleUpdateUser(request, idMatch[1], user);
+      }
+      if (idMatch && request.method === "DELETE") {
+        return this.handleDeleteUser(idMatch[1], user);
+      }
+
+      return Response.json({ ok: false, error: "not found" }, { status: 404 });
+    } catch (err) {
+      console.error("[auth] request failed", err instanceof Error ? err.message : String(err));
+      return Response.json({ ok: false, error: "authentication service error" }, { status: 500 });
+    }
+  }
+
+  /** First-run bootstrap: the ONLY time signup is open. Creates the Owner. */
+  private async handleSignup(request: Request): Promise<Response> {
+    const body = (await request.json().catch(() => ({}))) as {
+      name?: string;
+      email?: string;
+      password?: string;
+    };
+    const name = (body.name ?? "").trim();
+    const email = (body.email ?? "").trim().toLowerCase();
+    const password = body.password ?? "";
+    if (!name || !email || !email.includes("@")) {
+      return Response.json({ ok: false, error: "Name and a valid email are required." }, { status: 400 });
+    }
+    if (password.length < 6) {
+      return Response.json({ ok: false, error: "Password must be at least 6 characters." }, { status: 400 });
+    }
+    const count = this.ctx.storage.sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM users").toArray()[0]?.n ?? 0;
+    if (count > 0) {
+      return Response.json(
+        { ok: false, error: "Accounts already exist. Ask the Owner to create your user." },
+        { status: 403 },
+      );
+    }
+    const salt = randomSaltHex();
+    const hash = await hashPassword(password, salt);
+    const id = `usr-${crypto.randomUUID().slice(0, 8)}`;
+    this.ctx.storage.sql.exec(
+      `INSERT INTO users (id, email, name, role, status, salt, hash, isBootstrapOwner, createdAt)
+       VALUES (?, ?, ?, 'Owner', 'Active', ?, ?, 1, ?)`,
+      id,
+      email,
+      name,
+      salt,
+      hash,
+      new Date().toISOString(),
+    );
+    const created = this.ctx.storage.sql.exec<UserRow>("SELECT * FROM users WHERE id = ?", id).toArray()[0];
+    const session = await this.createSession(id);
+    return Response.json({ ok: true, token: session.token, user: publicUser(created) });
+  }
+
+  private async handleLogin(request: Request): Promise<Response> {
+    const body = (await request.json().catch(() => ({}))) as { email?: string; password?: string };
+    const email = (body.email ?? "").trim().toLowerCase();
+    const password = body.password ?? "";
+    if (!email || !password) {
+      return Response.json({ ok: false, error: "Email and password are required." }, { status: 400 });
+    }
+    const rows = this.ctx.storage.sql.exec<UserRow>("SELECT * FROM users WHERE email = ?", email).toArray();
+    const user = rows[0];
+    if (!user) return Response.json({ ok: false, error: "Incorrect email or password." }, { status: 401 });
+    if (user.status !== "Active") {
+      return Response.json({ ok: false, error: "This account has been deactivated." }, { status: 403 });
+    }
+    const hash = await hashPassword(password, user.salt);
+    if (hash !== user.hash) {
+      return Response.json({ ok: false, error: "Incorrect email or password." }, { status: 401 });
+    }
+    const session = await this.createSession(user.id);
+    return Response.json({ ok: true, token: session.token, user: publicUser(user) });
+  }
+
+  private async handleCreateUser(request: Request): Promise<Response> {
+    const body = (await request.json().catch(() => ({}))) as {
+      name?: string;
+      email?: string;
+      password?: string;
+      role?: string;
+    };
+    const name = (body.name ?? "").trim();
+    const email = (body.email ?? "").trim().toLowerCase();
+    const password = body.password ?? "";
+    const role = body.role ?? "";
+    if (!name || !email.includes("@")) {
+      return Response.json({ ok: false, error: "Name and a valid email are required." }, { status: 400 });
+    }
+    if (password.length < 6) {
+      return Response.json({ ok: false, error: "Password must be at least 6 characters." }, { status: 400 });
+    }
+    if (!ROLES.includes(role as UserRole)) {
+      return Response.json({ ok: false, error: "Role must be Owner, Admin, Accountant, or Staff." }, { status: 400 });
+    }
+    const existing = this.ctx.storage.sql
+      .exec<{ n: number }>("SELECT COUNT(*) AS n FROM users WHERE email = ?", email)
+      .toArray()[0]?.n ?? 0;
+    if (existing > 0) {
+      return Response.json({ ok: false, error: "A user with this email already exists." }, { status: 409 });
+    }
+    const salt = randomSaltHex();
+    const hash = await hashPassword(password, salt);
+    const id = `usr-${crypto.randomUUID().slice(0, 8)}`;
+    try {
+      this.ctx.storage.sql.exec(
+        `INSERT INTO users (id, email, name, role, status, salt, hash, isBootstrapOwner, createdAt)
+         VALUES (?, ?, ?, ?, 'Active', ?, ?, 0, ?)`,
+        id,
+        email,
+        name,
+        role,
+        salt,
+        hash,
+        new Date().toISOString(),
+      );
+    } catch {
+      return Response.json({ ok: false, error: "A user with this email already exists." }, { status: 409 });
+    }
+    const created = this.ctx.storage.sql.exec<UserRow>("SELECT * FROM users WHERE id = ?", id).toArray()[0];
+    return Response.json({ ok: true, user: publicUser(created) });
+  }
+
+  private async handleUpdateUser(request: Request, targetId: string, actor: UserRow): Promise<Response> {
+    const body = (await request.json().catch(() => ({}))) as {
+      name?: string;
+      role?: string;
+      status?: string;
+      password?: string;
+    };
+    const rows = this.ctx.storage.sql.exec<UserRow>("SELECT * FROM users WHERE id = ?", targetId).toArray();
+    const target = rows[0];
+    if (!target) return Response.json({ ok: false, error: "User not found." }, { status: 404 });
+
+    const roleChange = body.role !== undefined && body.role !== target.role;
+    const statusChange = body.status !== undefined && body.status !== target.status;
+
+    if (body.role !== undefined && !ROLES.includes(body.role as UserRole)) {
+      return Response.json({ ok: false, error: "Role must be Owner, Admin, Accountant, or Staff." }, { status: 400 });
+    }
+    if (body.status !== undefined && body.status !== "Active" && body.status !== "Deactivated") {
+      return Response.json({ ok: false, error: "Status must be Active or Deactivated." }, { status: 400 });
+    }
+
+    // ── Security rules ──
+    // 1. The bootstrap Owner's role/status can never be changed by anyone.
+    if (target.isBootstrapOwner === 1 && (roleChange || statusChange)) {
+      return Response.json({ ok: false, error: "The Owner account's role cannot be changed." }, { status: 403 });
+    }
+    // 2. Nobody changes their own role or status (no self-promotion / self-demotion).
+    if (targetId === actor.id && (roleChange || statusChange)) {
+      return Response.json({ ok: false, error: "You cannot change your own role or status." }, { status: 403 });
+    }
+    // 3. Demoting/deactivating an Owner requires at least one other active Owner.
+    const wouldLoseOwner =
+      target.role === "Owner" &&
+      target.status === "Active" &&
+      ((body.role !== undefined && body.role !== "Owner") || (body.status !== undefined && body.status !== "Active"));
+    if (wouldLoseOwner && this.countActiveOwners(targetId) === 0) {
+      return Response.json({ ok: false, error: "At least one active Owner is required." }, { status: 403 });
+    }
+
+    const sets: string[] = [];
+    const vals: unknown[] = [];
+    if (body.name !== undefined && body.name.trim()) {
+      sets.push("name = ?");
+      vals.push(body.name.trim());
+    }
+    if (body.role !== undefined) {
+      sets.push("role = ?");
+      vals.push(body.role);
+    }
+    if (body.status !== undefined) {
+      sets.push("status = ?");
+      vals.push(body.status);
+    }
+    if (body.password !== undefined) {
+      if (body.password.length < 6) {
+        return Response.json({ ok: false, error: "Password must be at least 6 characters." }, { status: 400 });
+      }
+      const salt = randomSaltHex();
+      sets.push("salt = ?", "hash = ?");
+      vals.push(salt, await hashPassword(body.password, salt));
+      // Resetting a password ends all of that user's sessions.
+      this.ctx.storage.sql.exec("DELETE FROM sessions WHERE userId = ?", targetId);
+    }
+    if (sets.length > 0) {
+      vals.push(targetId);
+      this.ctx.storage.sql.exec(`UPDATE users SET ${sets.join(", ")} WHERE id = ?`, ...(vals as string[]));
+      // Deactivating a user ends their sessions immediately.
+      if (body.status === "Deactivated") {
+        this.ctx.storage.sql.exec("DELETE FROM sessions WHERE userId = ?", targetId);
+      }
+    }
+    const updated = this.ctx.storage.sql.exec<UserRow>("SELECT * FROM users WHERE id = ?", targetId).toArray()[0];
+    return Response.json({ ok: true, user: publicUser(updated) });
+  }
+
+  private handleDeleteUser(targetId: string, actor: UserRow): Response {
+    if (targetId === actor.id) {
+      return Response.json({ ok: false, error: "You cannot delete your own account." }, { status: 403 });
+    }
+    const rows = this.ctx.storage.sql.exec<UserRow>("SELECT * FROM users WHERE id = ?", targetId).toArray();
+    const target = rows[0];
+    if (!target) return Response.json({ ok: false, error: "User not found." }, { status: 404 });
+    if (target.isBootstrapOwner === 1) {
+      return Response.json({ ok: false, error: "The Owner account cannot be removed." }, { status: 403 });
+    }
+    if (target.role === "Owner" && target.status === "Active" && this.countActiveOwners(targetId) === 0) {
+      return Response.json({ ok: false, error: "At least one active Owner is required." }, { status: 403 });
+    }
+    this.ctx.storage.sql.exec("DELETE FROM users WHERE id = ?", targetId);
+    this.ctx.storage.sql.exec("DELETE FROM sessions WHERE userId = ?", targetId);
+    return Response.json({ ok: true });
+  }
+
+  private async handleChangePassword(request: Request, user: UserRow): Promise<Response> {
+    const body = (await request.json().catch(() => ({}))) as {
+      currentPassword?: string;
+      newPassword?: string;
+    };
+    if (!body.currentPassword || !body.newPassword) {
+      return Response.json({ ok: false, error: "Current and new passwords are required." }, { status: 400 });
+    }
+    if (body.newPassword.length < 6) {
+      return Response.json({ ok: false, error: "New password must be at least 6 characters." }, { status: 400 });
+    }
+    const rows = this.ctx.storage.sql.exec<UserRow>("SELECT * FROM users WHERE id = ?", user.id).toArray();
+    const full = rows[0];
+    if (!full) return Response.json({ ok: false, error: "User not found." }, { status: 404 });
+    const currentHash = await hashPassword(body.currentPassword, full.salt);
+    if (currentHash !== full.hash) {
+      return Response.json({ ok: false, error: "Current password is incorrect." }, { status: 403 });
+    }
+    const salt = randomSaltHex();
+    const hash = await hashPassword(body.newPassword, salt);
+    this.ctx.storage.sql.exec("UPDATE users SET salt = ?, hash = ? WHERE id = ?", salt, hash, user.id);
+    return Response.json({ ok: true });
   }
 
   // ─────────────────────────── Document blob endpoints ───────────────────────────

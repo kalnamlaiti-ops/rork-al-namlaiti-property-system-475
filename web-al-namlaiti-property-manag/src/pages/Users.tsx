@@ -1,35 +1,74 @@
-import { useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { PageHeader } from "@/components/PageHeader";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
+import { Label } from "@/components/ui/label";
+import { Badge } from "@/components/ui/badge";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+} from "@/components/ui/dialog";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
-import UserForm from "@/components/forms/UserForm";
-import { Shield, Mail, Pencil, Trash2, Eye } from "lucide-react";
+import { authApi, type AuthUser, type Role } from "@/lib/authClient";
+import { useAuth } from "@/context/AuthContext";
+import { Shield, Mail, KeyRound, Trash2, UserPlus, Lock, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
 
-interface User {
-  id: string;
-  name: string;
-  email: string;
-  role: string;
-  status: string;
-}
+const ROLES: Role[] = ["Owner", "Admin", "Accountant", "Staff"];
 
-const initialUsers: User[] = [
-  { id: "u-1", name: "Super Admin", email: "admin@propvault.com", role: "Super Admin", status: "Active" },
-  { id: "u-2", name: "Property Manager", email: "manager@propvault.com", role: "Manager", status: "Active" },
-  { id: "u-3", name: "Finance User", email: "finance@propvault.com", role: "Finance", status: "Active" },
-];
+const ROLE_HINTS: Record<Role, string> = {
+  Owner: "Full control, including user management",
+  Admin: "Everything except user management",
+  Accountant: "Finance (invoices, payments, expenses, EWA, accounting) + view-only portfolio",
+  Staff: "Payments, maintenance & complaints + view-only dashboards",
+};
 
 export default function Users() {
-  const [users, setUsers] = useState<User[]>(initialUsers);
+  const { user: me, setUser } = useAuth();
+  const [users, setUsers] = useState<AuthUser[]>([]);
+  const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
-  const [dialogOpen, setDialogOpen] = useState(false);
-  const [editingUser, setEditingUser] = useState<User | undefined>();
-  const [viewingUser, setViewingUser] = useState<User | undefined>();
-  const [deletingUser, setDeletingUser] = useState<User | undefined>();
+
+  // Add-user dialog state
+  const [addOpen, setAddOpen] = useState(false);
+  const [newName, setNewName] = useState("");
+  const [newEmail, setNewEmail] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [newRole, setNewRole] = useState<Role>("Staff");
+  const [saving, setSaving] = useState(false);
+
+  // Reset-password dialog state
+  const [resetTarget, setResetTarget] = useState<AuthUser | undefined>();
+  const [resetPassword, setResetPassword] = useState("");
+
+  const [deletingUser, setDeletingUser] = useState<AuthUser | undefined>();
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const res = await authApi.listUsers();
+      setUsers(res.users);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not load users.");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
 
   const filtered = users.filter(
     (u) =>
@@ -38,39 +77,99 @@ export default function Users() {
       u.role.toLowerCase().includes(search.toLowerCase()),
   );
 
+  const isBootstrapOwner = (u: AuthUser) => u.isBootstrapOwner;
+  const isSelf = (u: AuthUser) => me?.id === u.id;
+
   const openAdd = () => {
-    setEditingUser(undefined);
-    setDialogOpen(true);
+    setNewName("");
+    setNewEmail("");
+    setNewPassword("");
+    setNewRole("Staff");
+    setAddOpen(true);
   };
 
-  const openEdit = (user: User) => {
-    setEditingUser(user);
-    setDialogOpen(true);
-  };
-
-  const closeDialog = () => {
-    setDialogOpen(false);
-    setEditingUser(undefined);
-  };
-
-  const handleSave = (user: User) => {
-    if (editingUser) {
-      setUsers((prev) => prev.map((u) => (u.id === user.id ? user : u)));
-      toast.success("User updated");
-    } else {
-      setUsers((prev) => [...prev, user]);
-      toast.success("User created");
+  const handleCreate = async () => {
+    if (!newName.trim() || !newEmail.trim() || newPassword.length < 6) {
+      toast.error("Name, email and a password of at least 6 characters are required.");
+      return;
+    }
+    setSaving(true);
+    try {
+      const res = await authApi.createUser({
+        name: newName.trim(),
+        email: newEmail.trim(),
+        password: newPassword,
+        role: newRole,
+      });
+      setUsers((prev) => [...prev, res.user]);
+      toast.success(`${res.user.name} added as ${res.user.role}`);
+      setAddOpen(false);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not create the user.");
+    } finally {
+      setSaving(false);
     }
   };
 
-  const handleDelete = (id: string) => {
-    setUsers((prev) => prev.filter((u) => u.id !== id));
-    toast.success("User deleted");
+  const handleRoleChange = async (u: AuthUser, role: Role) => {
+    if (role === u.role) return;
+    try {
+      const res = await authApi.updateUser(u.id, { role });
+      setUsers((prev) => prev.map((x) => (x.id === u.id ? res.user : x)));
+      if (isSelf(u)) setUser(res.user);
+      toast.success(`${u.name} is now ${role}`);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not change the role.");
+    }
+  };
+
+  const handleStatusToggle = async (u: AuthUser) => {
+    const next = u.status === "Active" ? "Deactivated" : "Active";
+    try {
+      const res = await authApi.updateUser(u.id, { status: next });
+      setUsers((prev) => prev.map((x) => (x.id === u.id ? res.user : x)));
+      toast.success(
+        next === "Deactivated"
+          ? `${u.name} deactivated — their sign-in is blocked immediately.`
+          : `${u.name} reactivated.`,
+      );
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not change the status.");
+    }
+  };
+
+  const handleResetPassword = async () => {
+    if (!resetTarget || resetPassword.length < 6) {
+      toast.error("New password must be at least 6 characters.");
+      return;
+    }
+    try {
+      await authApi.updateUser(resetTarget.id, { password: resetPassword });
+      toast.success(`Password reset for ${resetTarget.name}. Their other sessions are signed out.`);
+      setResetTarget(undefined);
+      setResetPassword("");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not reset the password.");
+    }
+  };
+
+  const handleDelete = async (u: AuthUser) => {
+    try {
+      await authApi.deleteUser(u.id);
+      setUsers((prev) => prev.filter((x) => x.id !== u.id));
+      toast.success(`${u.name} removed.`);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not remove the user.");
+    }
   };
 
   return (
     <div className="space-y-6">
-      <PageHeader title="Users" subtitle={`${users.length} user(s)`} action={{ label: "Add User", onClick: openAdd }} />
+      <PageHeader
+        title="Users"
+        subtitle={`${users.length} user(s) · roles control who sees and changes what`}
+        action={{ label: "Add User", onClick: openAdd }}
+      />
 
       <div className="relative max-w-md">
         <Shield className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
@@ -82,106 +181,224 @@ export default function Users() {
         />
       </div>
 
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-        {filtered.map((u) => (
-          <Card key={u.id}>
-            <CardContent className="p-5">
-              <div className="flex items-start justify-between">
-                <div className="flex items-center gap-3">
-                  <div className="flex h-10 w-10 items-center justify-center rounded-full bg-primary font-semibold text-white">
-                    {u.name.charAt(0)}
+      {loading ? (
+        <div className="flex items-center gap-2 py-10 text-sm text-muted-foreground">
+          <RefreshCw className="h-4 w-4 animate-spin" /> Loading users…
+        </div>
+      ) : (
+        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+          {filtered.map((u) => {
+            const locked = isBootstrapOwner(u);
+            return (
+              <Card key={u.id}>
+                <CardContent className="p-5">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="flex min-w-0 items-center gap-3">
+                      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-primary font-semibold text-white">
+                        {u.name.charAt(0).toUpperCase()}
+                      </div>
+                      <div className="min-w-0">
+                        <p className="flex items-center gap-1.5 truncate font-semibold text-foreground">
+                          {u.name}
+                          {locked && <Lock className="h-3.5 w-3.5 text-muted-foreground" />}
+                        </p>
+                        <p className="truncate text-sm text-muted-foreground">{u.email}</p>
+                      </div>
+                    </div>
+                    <Badge
+                      className={
+                        u.status === "Active"
+                          ? "bg-emerald-100 text-emerald-700 hover:bg-emerald-100"
+                          : "bg-slate-100 text-slate-600 hover:bg-slate-100"
+                      }
+                    >
+                      {u.status}
+                    </Badge>
                   </div>
-                  <div>
-                    <p className="font-semibold text-foreground">{u.name}</p>
-                    <p className="text-sm text-muted-foreground">{u.role}</p>
+
+                  <div className="mt-4 space-y-2 text-sm">
+                    <div className="flex items-center gap-2">
+                      <Shield className="h-4 w-4 text-muted-foreground" />
+                      {locked || isSelf(u) ? (
+                        <span className="font-medium">{u.role}</span>
+                      ) : (
+                        <Select value={u.role} onValueChange={(v) => void handleRoleChange(u, v as Role)}>
+                          <SelectTrigger className="h-8 w-40">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {ROLES.map((r) => (
+                              <SelectItem key={r} value={r}>
+                                {r}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      )}
+                    </div>
+                    <p className="pl-6 text-xs text-muted-foreground">{ROLE_HINTS[u.role]}</p>
                   </div>
-                </div>
-                <span
-                  className={`inline-flex rounded-full px-2.5 py-0.5 text-xs font-medium ${
-                    u.status === "Active" ? "bg-emerald-100 text-emerald-700" : "bg-slate-100 text-slate-600"
-                  }`}
-                >
-                  {u.status}
-                </span>
-              </div>
-              <div className="mt-4 flex items-center gap-2 text-sm text-muted-foreground">
-                <Mail className="h-4 w-4" />
-                {u.email}
-              </div>
-              <div className="mt-4 flex gap-2">
-                <Button variant="secondary" className="flex-1" size="sm" onClick={() => setViewingUser(u)}>
-                  <Eye className="mr-2 h-4 w-4" /> View
-                </Button>
-                <Button variant="outline" className="flex-1" size="sm" onClick={() => openEdit(u)}>
-                  <Pencil className="mr-2 h-4 w-4" /> Edit
-                </Button>
-                <Button variant="outline" size="sm" className="text-red-600 hover:bg-red-50 hover:text-red-700" onClick={() => setDeletingUser(u)}>
-                  <Trash2 className="h-4 w-4" />
-                </Button>
-              </div>
-            </CardContent>
-          </Card>
-        ))}
-      </div>
+
+                  <div className="mt-4 flex items-center gap-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="flex-1"
+                      onClick={() => {
+                        setResetTarget(u);
+                        setResetPassword("");
+                      }}
+                    >
+                      <KeyRound className="mr-2 h-4 w-4" /> Reset Password
+                    </Button>
+                    {locked || isSelf(u) ? (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="flex-1 opacity-50"
+                        disabled
+                        title={locked ? "The main Owner account cannot be deactivated" : "You cannot deactivate yourself"}
+                      >
+                        <Trash2 className="mr-2 h-4 w-4" />
+                        {u.status === "Active" ? "Deactivate" : "Activate"}
+                      </Button>
+                    ) : (
+                      <Button variant="outline" size="sm" className="flex-1" onClick={() => void handleStatusToggle(u)}>
+                        <Trash2 className="mr-2 h-4 w-4" />
+                        {u.status === "Active" ? "Deactivate" : "Activate"}
+                      </Button>
+                    )}
+                    {locked ? (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="opacity-50"
+                        disabled
+                        title="The main Owner account cannot be removed"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    ) : (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="text-red-600 hover:bg-red-50 hover:text-red-700"
+                        onClick={() => setDeletingUser(u)}
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    )}
+                  </div>
+                </CardContent>
+              </Card>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Add user */}
+      <Dialog open={addOpen} onOpenChange={setAddOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <UserPlus className="h-5 w-5" /> Add User
+            </DialogTitle>
+            <DialogDescription>Create a sign-in and choose the role. They can change the password after signing in.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-1.5">
+              <Label htmlFor="new-name">Name</Label>
+              <Input id="new-name" value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="e.g. Fatima Ahmed" />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="new-email">Email</Label>
+              <Input
+                id="new-email"
+                type="email"
+                value={newEmail}
+                onChange={(e) => setNewEmail(e.target.value)}
+                placeholder="name@example.com"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="new-password">Temporary password</Label>
+              <Input
+                id="new-password"
+                type="text"
+                value={newPassword}
+                onChange={(e) => setNewPassword(e.target.value)}
+                placeholder="At least 6 characters"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label>Role</Label>
+              <Select value={newRole} onValueChange={(v) => setNewRole(v as Role)}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {ROLES.map((r) => (
+                    <SelectItem key={r} value={r}>
+                      {r}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">{ROLE_HINTS[newRole]}</p>
+            </div>
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" onClick={() => setAddOpen(false)}>
+                Cancel
+              </Button>
+              <Button onClick={() => void handleCreate()} disabled={saving}>
+                {saving ? "Creating…" : "Create User"}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Reset password */}
+      <Dialog open={Boolean(resetTarget)} onOpenChange={(o) => !o && setResetTarget(undefined)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Reset password</DialogTitle>
+            <DialogDescription>
+              Set a new password for {resetTarget?.name}. Their other sessions are signed out immediately.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-1.5">
+              <Label htmlFor="reset-password">New password</Label>
+              <Input
+                id="reset-password"
+                type="text"
+                value={resetPassword}
+                onChange={(e) => setResetPassword(e.target.value)}
+                placeholder="At least 6 characters"
+              />
+            </div>
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" onClick={() => setResetTarget(undefined)}>
+                Cancel
+              </Button>
+              <Button onClick={() => void handleResetPassword()}>Reset Password</Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       <DeleteConfirmDialog
         open={Boolean(deletingUser)}
         onOpenChange={(o) => !o && setDeletingUser(undefined)}
         itemName={deletingUser?.name}
-        onConfirm={() => deletingUser && handleDelete(deletingUser.id)}
+        onConfirm={() => deletingUser && void handleDelete(deletingUser)}
       />
 
-      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-        <DialogContent className="max-h-[90vh] max-w-2xl overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle>{editingUser ? "Edit User" : "Add User"}</DialogTitle>
-            <DialogDescription>Fill in the user details below.</DialogDescription>
-          </DialogHeader>
-          <UserForm initialData={editingUser} onClose={closeDialog} onSave={handleSave} />
-        </DialogContent>
-      </Dialog>
-
-      <Dialog open={Boolean(viewingUser)} onOpenChange={() => setViewingUser(undefined)}>
-        <DialogContent className="max-w-2xl">
-          <DialogHeader>
-            <DialogTitle>{viewingUser?.name}</DialogTitle>
-            <DialogDescription>User details</DialogDescription>
-          </DialogHeader>
-          {viewingUser && (
-            <div className="space-y-4 text-sm">
-              <div className="grid gap-3 sm:grid-cols-2">
-                <div>
-                  <p className="text-muted-foreground">Email</p>
-                  <p className="font-medium flex items-center gap-2">
-                    <Mail className="h-4 w-4" /> {viewingUser.email}
-                  </p>
-                </div>
-                <div>
-                  <p className="text-muted-foreground">Role</p>
-                  <p className="font-medium">{viewingUser.role}</p>
-                </div>
-                <div>
-                  <p className="text-muted-foreground">Status</p>
-                  <p className="font-medium">
-                    <span
-                      className={`inline-flex rounded-full px-2.5 py-0.5 text-xs font-medium ${
-                        viewingUser.status === "Active" ? "bg-emerald-100 text-emerald-700" : "bg-slate-100 text-slate-600"
-                      }`}
-                    >
-                      {viewingUser.status}
-                    </span>
-                  </p>
-                </div>
-              </div>
-              <div className="flex justify-end">
-                <Button variant="outline" onClick={() => { setViewingUser(undefined); openEdit(viewingUser); }}>
-                  <Pencil className="mr-2 h-4 w-4" /> Edit
-                </Button>
-              </div>
-            </div>
-          )}
-        </DialogContent>
-      </Dialog>
+      <div className="flex items-center gap-2 text-xs text-muted-foreground">
+        <Mail className="h-3.5 w-3.5" />
+        Deactivated users cannot sign in; the main Owner account is protected and cannot be changed or removed.
+      </div>
     </div>
   );
 }

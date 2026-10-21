@@ -1,5 +1,7 @@
 import { NavLink, useLocation } from "react-router-dom";
 import { cn } from "@/lib/utils";
+import { useAuth } from "@/context/AuthContext";
+import { canViewPageId, pageIdFromPath } from "@/lib/permissions";
 import {
   LayoutDashboard,
   Users,
@@ -104,6 +106,15 @@ function SidebarItem({ item, onClick }: { item: { name: string; href: string; ic
 }
 
 export function Sidebar({ mobileOpen, setMobileOpen }: { mobileOpen: boolean; setMobileOpen: (open: boolean) => void }) {
+  const { user, logout } = useAuth();
+  const canView = (href: string) => canViewPageId(user?.role, pageIdFromPath(href));
+  const initials = (user?.name ?? "?")
+    .split(/\s+/)
+    .map((p) => p[0])
+    .slice(0, 2)
+    .join("")
+    .toUpperCase();
+
   return (
     <>
       <aside
@@ -121,32 +132,45 @@ export function Sidebar({ mobileOpen, setMobileOpen }: { mobileOpen: boolean; se
           </div>
 
           <nav className="flex-1 space-y-6 overflow-y-auto px-3 py-4">
-            <SidebarItem item={sidebarNav[0] as { name: string; href: string; icon: React.ElementType }} onClick={() => setMobileOpen(false)} />
+            {canView("/") && (
+              <SidebarItem item={sidebarNav[0] as { name: string; href: string; icon: React.ElementType }} onClick={() => setMobileOpen(false)} />
+            )}
 
-            {sidebarNav.slice(1).map((group) => (
-              <div key={group.section}>
-                <p className="mb-2 px-3 text-xs font-semibold tracking-wider text-sidebar-foreground/60">
-                  {group.section}
-                </p>
-                <div className="space-y-1">
-                  {group.items.map((item) => (
-                    <SidebarItem key={item.name} item={item} onClick={() => setMobileOpen(false)} />
-                  ))}
+            {sidebarNav.slice(1).map((group) => {
+              const visible = group.items.filter((item) => canView(item.href));
+              if (visible.length === 0) return null;
+              return (
+                <div key={group.section}>
+                  <p className="mb-2 px-3 text-xs font-semibold tracking-wider text-sidebar-foreground/60">
+                    {group.section}
+                  </p>
+                  <div className="space-y-1">
+                    {visible.map((item) => (
+                      <SidebarItem key={item.name} item={item} onClick={() => setMobileOpen(false)} />
+                    ))}
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </nav>
 
           <div className="border-t border-sidebar-border p-4">
             <div className="flex items-center gap-3">
-              <div className="flex h-9 w-9 items-center justify-center rounded-full bg-primary text-sm font-medium text-white">
-                S
+              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-primary text-sm font-medium text-white">
+                {initials || "?"}
               </div>
-              <div className="flex-1 overflow-hidden">
-                <p className="truncate text-sm font-medium text-white">Super Admin</p>
-                <p className="truncate text-xs text-sidebar-foreground">admin@propvault.com</p>
+              <div className="min-w-0 flex-1 overflow-hidden">
+                <p className="truncate text-sm font-medium text-white">{user?.name ?? "Signed in"}</p>
+                <p className="truncate text-xs text-sidebar-foreground">
+                  {user?.email} · {user?.role}
+                </p>
               </div>
-              <button type="button" className="text-sidebar-foreground hover:text-white">
+              <button
+                type="button"
+                onClick={() => void logout()}
+                title="Sign out"
+                className="text-sidebar-foreground hover:text-white"
+              >
                 <LogOut className="h-4 w-4" />
               </button>
             </div>

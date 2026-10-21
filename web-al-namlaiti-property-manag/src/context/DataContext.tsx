@@ -39,6 +39,9 @@ import {
   type SaveInfo,
   type ServerMessage,
 } from "@/lib/syncClient";
+import { getToken } from "@/lib/authClient";
+import { canEditPageId, pageIdFromCollection } from "@/lib/permissions";
+import { useAuth } from "@/context/AuthContext";
 import {
   toISODate,
   toPeriodKey,
@@ -197,6 +200,19 @@ export const [DataProvider, useData] = createContextHook(() => {
   // Used to seed default lease template field positions exactly once per session.
   const leaseTemplateFieldsSeeded = useRef(false);
 
+  // Role-based mutation guard: the signed-in user's role decides which
+  // collections they may change. Automation consequences (payment cascades,
+  // balance invoices, the overdue sweep) call the primitives with
+  // `{ system: true }` so they still run for restricted roles.
+  const { user } = useAuth();
+  const userRoleRef = useRef(user?.role);
+  userRoleRef.current = user?.role;
+  const canEditCollection = useCallback((collection: string): boolean => {
+    if (canEditPageId(userRoleRef.current, pageIdFromCollection(collection))) return true;
+    toast.error("Your role does not allow this change.");
+    return false;
+  }, []);
+
   // ─────────────────────────── Sync wiring ───────────────────────────
 
   // Apply a server "patch" mutation to local state.
@@ -328,7 +344,8 @@ export const [DataProvider, useData] = createContextHook(() => {
 
   // Send an add mutation for an entity (optimistic update + server push).
   const sendAdd = useCallback(
-    <K extends keyof DataStore>(collection: K, entity: DataStore[K][number]) => {
+    <K extends keyof DataStore>(collection: K, entity: DataStore[K][number], opts?: { system?: boolean }) => {
+      if (!opts?.system && !canEditCollection(collection as string)) return;
       updateArray(collection, (arr) => [...arr, entity] as unknown as DataStore[K]);
       syncClient.sendMutate(
         { kind: "add", collection, entity: entity as unknown as Record<string, unknown> },
@@ -340,7 +357,8 @@ export const [DataProvider, useData] = createContextHook(() => {
 
   // Send an update mutation.
   const sendUpdate = useCallback(
-    <K extends keyof DataStore>(collection: K, id: string, patch: Record<string, unknown>) => {
+    <K extends keyof DataStore>(collection: K, id: string, patch: Record<string, unknown>, opts?: { system?: boolean }) => {
+      if (!opts?.system && !canEditCollection(collection as string)) return;
       updateArray(collection, (arr) =>
         (arr as { id: string }[]).map((r) => (r.id === id ? { ...r, ...patch, id } : r)) as unknown as DataStore[K],
       );
@@ -352,6 +370,7 @@ export const [DataProvider, useData] = createContextHook(() => {
   // Send a delete mutation (with snapshot for recover support).
   const sendDelete = useCallback(
     <K extends keyof DataStore>(collection: K, id: string, snapshot?: Record<string, unknown>) => {
+      if (!canEditCollection(collection as string)) return;
       updateArray(collection, (arr) => (arr as { id: string }[]).filter((r) => r.id !== id) as unknown as DataStore[K]);
       syncClient.sendMutate({ kind: "delete", collection, id, snapshot }, actorRef.current);
     },
@@ -384,9 +403,13 @@ export const [DataProvider, useData] = createContextHook(() => {
   const performDocUpload = useCallback(
     async (doc: Document, dataUri: string, attempt = 0): Promise<void> => {
       try {
+        const token = getToken();
         const res = await fetch(backendHttpUrl("/documents/upload"), {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: {
+            "Content-Type": "application/json",
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          },
           body: JSON.stringify({
             mutationId: newHttpMutationId(),
             record: { ...doc, fileUrl: undefined },
@@ -1053,11 +1076,16 @@ export const [DataProvider, useData] = createContextHook(() => {
 
       if (remaining <= 0) {
         if (existing && (existing.balance !== 0 || existing.status !== "Paid")) {
-          sendUpdate("invoices", existing.id, {
-            balance: 0,
-            status: "Paid",
-            notes: `Settled — ${original.invoiceNumber} fully paid`,
-          });
+          sendUpdate(
+            "invoices",
+            existing.id,
+            {
+              balance: 0,
+              status: "Paid",
+              notes: `Settled — ${original.invoiceNumber} fully paid`,
+            },
+            { system: true },
+          );
           pushHistory({
             action: "Edited" as HistoryAction,
             entityType: "Invoice",
@@ -1071,7 +1099,7 @@ export const [DataProvider, useData] = createContextHook(() => {
 
       if (existing) {
         if (existing.amount !== remaining || existing.balance !== remaining) {
-          sendUpdate("invoices", existing.id, { amount: remaining, balance: remaining });
+          sendUpdate("invoices", existing.id, { amount: remaining, balance: remaining }, { system: true });
           pushHistory({
             action: "Edited" as HistoryAction,
             entityType: "Invoice",
@@ -1108,7 +1136,7 @@ export const [DataProvider, useData] = createContextHook(() => {
         originalInvoiceId: original.id,
         generatedAutomatically: true,
       };
-      sendAdd("invoices", balanceInvoice);
+      sendAdd("invoices", balanceInvoice, { system: true });
       pushHistory({
         action: "Created" as HistoryAction,
         entityType: "Invoice",
@@ -1137,7 +1165,7 @@ export const [DataProvider, useData] = createContextHook(() => {
         );
         for (const upd of updates) {
           if (upd.kind === "update" && upd.id && upd.patch) {
-            sendUpdate(upd.collection as keyof DataStore, upd.id, upd.patch);
+            sendUpdate(upd.collection as keyof DataStore, upd.id, upd.patch, { system: true });
           }
         }
         // Post the payment journal entry
@@ -1147,7 +1175,7 @@ export const [DataProvider, useData] = createContextHook(() => {
             id: generateId("je"),
             entryNumber: generateCode("JE", data.journalEntries.length),
           };
-          sendAdd("journalEntries", je);
+          sendAdd("journalEntries", je, { system: true });
           sendUpdate("payments", newPayment.id, { journalEntryId: je.id });
           pushHistory({
             action: "Created" as HistoryAction,
@@ -1226,7 +1254,7 @@ export const [DataProvider, useData] = createContextHook(() => {
       });
       sendUpdate("payments", id, updates as unknown as Record<string, unknown>);
       for (const [invId, result] of rebalance) {
-        sendUpdate("invoices", invId, result as unknown as Record<string, unknown>);
+        sendUpdate("invoices", invId, result as unknown as Record<string, unknown>, { system: true });
       }
       const rebalanceSummary = Array.from(rebalance.entries())
         .map(([invId, r]) => {
@@ -1289,7 +1317,7 @@ export const [DataProvider, useData] = createContextHook(() => {
       });
       sendDelete("payments", id, snapshot as unknown as Record<string, unknown>);
       if (rebalanceInvoiceId && rebalance) {
-        sendUpdate("invoices", rebalanceInvoiceId, rebalance as unknown as Record<string, unknown>);
+        sendUpdate("invoices", rebalanceInvoiceId, rebalance as unknown as Record<string, unknown>, { system: true });
       }
       const rebalancedInvoice = rebalanceInvoiceId ? data.invoices.find((i) => i.id === rebalanceInvoiceId) : undefined;
       if (rebalancedInvoice && rebalance) {
@@ -2654,7 +2682,7 @@ export const [DataProvider, useData] = createContextHook(() => {
         inv.balance > 0 &&
         new Date(inv.dueDate) < today
       ) {
-        sendUpdate("invoices", inv.id, { status: "Overdue" });
+        sendUpdate("invoices", inv.id, { status: "Overdue" }, { system: true });
         pushHistory({
           action: "Edited" as HistoryAction,
           entityType: "Invoice",

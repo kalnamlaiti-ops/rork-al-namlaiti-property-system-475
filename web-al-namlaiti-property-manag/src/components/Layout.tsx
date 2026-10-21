@@ -1,11 +1,16 @@
 import { useState } from "react";
-import { Outlet } from "react-router-dom";
+import { Outlet, useLocation } from "react-router-dom";
 import { Sidebar } from "./Sidebar";
 import { LiveIndicator } from "./LiveIndicator";
 import { ShareButton } from "./ShareButton";
+import { useAuth } from "@/context/AuthContext";
+import { canViewPath } from "@/lib/permissions";
 
 export function Layout() {
   const [mobileOpen, setMobileOpen] = useState(false);
+  const location = useLocation();
+  const { user } = useAuth();
+  const canViewThisPage = canViewPath(user?.role, location.pathname);
 
   return (
     <div className="min-h-screen bg-muted/30 md:pl-64">
@@ -30,7 +35,17 @@ export function Layout() {
       </header>
       <main className="min-h-screen p-4 md:p-6 lg:p-8">
         <div className="mx-auto max-w-7xl">
-          <Outlet />
+          {canViewThisPage ? (
+            <Outlet />
+          ) : (
+            <div className="mx-auto max-w-md rounded-xl border border-border bg-card p-10 text-center shadow-sm">
+              <p className="text-lg font-semibold text-foreground">No access to this page</p>
+              <p className="mt-2 text-sm text-muted-foreground">
+                Your role ({user?.role ?? "unknown"}) does not include permission to view this section. Ask the Owner
+                if you need access.
+              </p>
+            </div>
+          )}
         </div>
       </main>
     </div>

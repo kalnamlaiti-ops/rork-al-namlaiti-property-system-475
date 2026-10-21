@@ -45,9 +45,6 @@ export default function Dashboard() {
   );
   const totalBilled = billableInvoices.reduce((sum, i) => sum + i.amount, 0);
   const totalCollected = totalBilled - outstanding;
-  const partiallyPaidOutstanding = billableInvoices
-    .filter((i) => computeInvoiceSettlement(i, payments).paymentStatus === "Partially Paid")
-    .reduce((sum, i) => sum + computeInvoiceSettlement(i, payments).remainingBalance, 0);
   const overdueInvoices = invoices.filter((i) => i.status === "Overdue").length;
   const overdueAmount = invoices
     .filter((i) => i.status === "Overdue")
@@ -58,7 +55,6 @@ export default function Dashboard() {
     { label: "Total Invoiced", value: formatCurrency(totalBilled), accent: "border-l-slate-400" },
     { label: "Total Collected", value: formatCurrency(totalCollected), accent: "border-l-emerald-500" },
     { label: "Outstanding", value: formatCurrency(outstanding), accent: "border-l-orange-500" },
-    { label: "Partially Paid", value: formatCurrency(partiallyPaidOutstanding), accent: "border-l-amber-500" },
     {
       label: "Overdue",
       value: formatCurrency(overdueAmount),
@@ -215,7 +211,7 @@ export default function Dashboard() {
         </Card>
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         {financeCards.map((c) => (
           <Card key={c.label} className={`border-l-4 ${c.accent} shadow-sm`}>
             <CardContent className="p-5">

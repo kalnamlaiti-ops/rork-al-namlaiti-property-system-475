@@ -9,7 +9,7 @@ import { useData } from "@/context/DataContext";
 import PaymentForm from "@/components/forms/PaymentForm";
 import PaymentReceiptDialog from "@/components/receipts/PaymentReceiptDialog";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
-import { Search, Pencil, Wallet, Calendar, Banknote, Landmark, Trash2, ReceiptText } from "lucide-react";
+import { Search, Pencil, Wallet, Calendar, Banknote, Landmark, ArrowLeftRight, Trash2, ReceiptText } from "lucide-react";
 import { format, isSameMonth, parseISO } from "date-fns";
 import type { Payment } from "@/types";
 
@@ -34,6 +34,7 @@ export default function Payments() {
     .reduce((sum, p) => sum + p.amount, 0);
   const cashTotal = payments.filter((p) => p.method === "Cash").reduce((sum, p) => sum + p.amount, 0);
   const chequeTotal = payments.filter((p) => p.method === "Cheque").reduce((sum, p) => sum + p.amount, 0);
+  const bankTransferTotal = payments.filter((p) => p.method === "Bank Transfer").reduce((sum, p) => sum + p.amount, 0);
 
   const filtered = useMemo(() => {
     return payments.filter((p) => {
@@ -72,7 +73,7 @@ export default function Payments() {
         action={{ label: "Record Payment", onClick: openAdd }}
       />
 
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
         <Card>
           <CardContent className="flex items-center justify-between p-5">
             <div>
@@ -114,6 +115,17 @@ export default function Payments() {
             </div>
             <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-purple-100 text-purple-600">
               <Landmark className="h-5 w-5" />
+            </div>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="flex items-center justify-between p-5">
+            <div>
+              <p className="text-sm font-medium text-muted-foreground">Bank Transfer</p>
+              <p className="mt-2 text-2xl font-bold text-foreground">{formatCurrency(bankTransferTotal)}</p>
+            </div>
+            <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-teal-100 text-teal-600">
+              <ArrowLeftRight className="h-5 w-5" />
             </div>
           </CardContent>
         </Card>

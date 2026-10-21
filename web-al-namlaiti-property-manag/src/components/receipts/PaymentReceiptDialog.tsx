@@ -47,7 +47,7 @@ function ReceiptPreview({ info }: { info: ReceiptInfo }) {
         <div className="w-1/2 text-center">
           <p className="text-sm font-bold tracking-wide">{RECEIPT_COMPANY.name}</p>
           <p className="text-xs">{RECEIPT_COMPANY.road}</p>
-          <p className="text-xs font-bold uppercase">{RECEIPT_COMPANY.tagline}</p>
+          <p className="text-xs font-bold">{RECEIPT_COMPANY.tagline}</p>
           <p className="mt-2 text-[11px] leading-4">
             {RECEIPT_COMPANY.tel}
             <br />

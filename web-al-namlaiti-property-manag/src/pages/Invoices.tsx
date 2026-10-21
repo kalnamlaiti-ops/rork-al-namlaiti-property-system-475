@@ -24,13 +24,10 @@ import {
   Search,
   Pencil,
   Trash2,
-  Send,
   Download,
   Eye,
   CheckCircle,
   RotateCcw,
-  MessageCircle,
-  Loader2,
 } from "lucide-react";
 import { format } from "date-fns";
 import type { Invoice } from "@/types";
@@ -51,8 +48,6 @@ export default function Invoices() {
     getUnitById,
     getBuildingById,
     deleteInvoice,
-    sendInvoice,
-    sendInvoiceWhatsAppMessage,
     markInvoicePaid,
     undoInvoicePayment,
     voidInvoice,
@@ -69,8 +64,6 @@ export default function Invoices() {
   const [editingInvoice, setEditingInvoice] = useState<Invoice | undefined>();
   const [deletingInvoice, setDeletingInvoice] = useState<Invoice | undefined>();
   const [undoingInvoice, setUndoingInvoice] = useState<Invoice | undefined>();
-  const [busyInvoiceId, setBusyInvoiceId] = useState<string | null>(null);
-  const [busyWhatsAppId, setBusyWhatsAppId] = useState<string | null>(null);
 
   // Cancelled invoices are void documents (balance forced to 0 on void) —
   // counting them would treat their original amount as "collected". Balance
@@ -118,24 +111,6 @@ export default function Invoices() {
   const closeDialog = () => {
     setDialogOpen(false);
     setEditingInvoice(undefined);
-  };
-
-  const handleSendWhatsApp = async (invoice: Invoice) => {
-    setBusyWhatsAppId(invoice.id);
-    try {
-      await sendInvoiceWhatsAppMessage(invoice.id);
-    } finally {
-      setBusyWhatsAppId(null);
-    }
-  };
-
-  const handleSend = async (invoice: Invoice) => {
-    setBusyInvoiceId(invoice.id);
-    try {
-      await sendInvoice(invoice.id);
-    } finally {
-      setBusyInvoiceId(null);
-    }
   };
 
   const handleDownload = (invoice: Invoice) => {
@@ -281,8 +256,6 @@ export default function Invoices() {
                   const building = unit ? getBuildingById(unit.buildingId) : undefined;
                   const settlement = computeInvoiceSettlement(i, payments);
                   const due = settlement.remainingBalance;
-                  const isBusy = busyInvoiceId === i.id;
-                  const isWaBusy = busyWhatsAppId === i.id;
                   return (
                     <tr key={i.id} className="hover:bg-muted/30">
                       <td className="px-4 py-3 font-medium">{i.invoiceNumber}</td>
@@ -304,12 +277,6 @@ export default function Invoices() {
                         <div className="flex justify-end gap-1">
                           <Button variant="ghost" size="sm" onClick={() => navigate(`/invoices/${i.id}`)} title="View">
                             <Eye className="h-3.5 w-3.5" />
-                          </Button>
-                          <Button variant="ghost" size="sm" onClick={() => handleSend(i)} disabled={isBusy || i.status === "Paid" || i.status === "Cancelled"} title="Send/Resend Email">
-                            {isBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
-                          </Button>
-                          <Button variant="ghost" size="sm" onClick={() => handleSendWhatsApp(i)} disabled={isWaBusy || i.status === "Paid" || i.status === "Cancelled" || !tenant?.phone} title="Send via WhatsApp">
-                            {isWaBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <MessageCircle className="h-3.5 w-3.5" />}
                           </Button>
                           <Button variant="ghost" size="sm" onClick={() => handleDownload(i)} title="Download PDF">
                             <Download className="h-3.5 w-3.5" />

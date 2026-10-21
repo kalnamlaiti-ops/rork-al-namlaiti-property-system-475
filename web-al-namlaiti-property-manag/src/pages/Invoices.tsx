@@ -29,7 +29,6 @@ import {
   Eye,
   CheckCircle,
   RotateCcw,
-  Mail,
   MessageCircle,
   Loader2,
 } from "lucide-react";
@@ -53,9 +52,7 @@ export default function Invoices() {
     getBuildingById,
     deleteInvoice,
     sendInvoice,
-    sendAllInvoices,
     sendInvoiceWhatsAppMessage,
-    sendAllInvoicesWhatsApp,
     markInvoicePaid,
     undoInvoicePayment,
     voidInvoice,
@@ -72,10 +69,8 @@ export default function Invoices() {
   const [editingInvoice, setEditingInvoice] = useState<Invoice | undefined>();
   const [deletingInvoice, setDeletingInvoice] = useState<Invoice | undefined>();
   const [undoingInvoice, setUndoingInvoice] = useState<Invoice | undefined>();
-  const [sendingAll, setSendingAll] = useState(false);
   const [busyInvoiceId, setBusyInvoiceId] = useState<string | null>(null);
   const [busyWhatsAppId, setBusyWhatsAppId] = useState<string | null>(null);
-  const [sendingAllWa, setSendingAllWa] = useState(false);
 
   // Cancelled invoices are void documents (balance forced to 0 on void) —
   // counting them would treat their original amount as "collected". Balance
@@ -123,24 +118,6 @@ export default function Invoices() {
   const closeDialog = () => {
     setDialogOpen(false);
     setEditingInvoice(undefined);
-  };
-
-  const handleSendAll = async () => {
-    setSendingAll(true);
-    try {
-      await sendAllInvoices((i) => i.status === "Draft" || i.status === "Sent");
-    } finally {
-      setSendingAll(false);
-    }
-  };
-
-  const handleSendAllWhatsApp = async () => {
-    setSendingAllWa(true);
-    try {
-      await sendAllInvoicesWhatsApp();
-    } finally {
-      setSendingAllWa(false);
-    }
   };
 
   const handleSendWhatsApp = async (invoice: Invoice) => {
@@ -192,18 +169,6 @@ export default function Invoices() {
         subtitle={`${invoices.length} invoice(s)`}
         action={{ label: "Create Invoice", onClick: openAdd }}
       />
-
-      {/* Automation toolbar */}
-      <div className="flex flex-wrap gap-3">
-        <Button onClick={handleSendAll} disabled={sendingAll} variant="outline">
-          {sendingAll ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Mail className="mr-2 h-4 w-4" />}
-          {sendingAll ? "Sending..." : "Send All Drafts"}
-        </Button>
-        <Button onClick={handleSendAllWhatsApp} disabled={sendingAllWa} variant="outline">
-          {sendingAllWa ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <MessageCircle className="mr-2 h-4 w-4" />}
-          {sendingAllWa ? "Sending..." : "Send All via WhatsApp"}
-        </Button>
-      </div>
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <Card>

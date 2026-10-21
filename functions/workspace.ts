@@ -275,8 +275,34 @@ export class Workspace extends DurableObject<Env> {
   // ─────────────────────────── HTTP entry ───────────────────────────
 
   override async fetch(request: Request): Promise<Response> {
-    const url = new URL(request.url);
+    // WebSocket upgrades bypass CORS handling entirely.
+    if (request.headers.get("Upgrade") === "websocket") {
+      return this.handleWebSocket(request);
+    }
 
+    // ── CORS: the web app calls this worker cross-origin from the browser ──
+    const origin = request.headers.get("Origin");
+    if (request.method === "OPTIONS") {
+      return new Response(null, { status: 204, headers: this.corsHeaders(origin) });
+    }
+    const res = await this.handleHttpRequest(request, new URL(request.url));
+    if (!origin) return res;
+    const headers = new Headers(res.headers);
+    for (const [k, v] of Object.entries(this.corsHeaders(origin))) headers.set(k, v);
+    return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
+  }
+
+  private corsHeaders(origin: string | null): Record<string, string> {
+    return {
+      "Access-Control-Allow-Origin": origin ?? "*",
+      "Access-Control-Allow-Methods": "GET, POST, PATCH, DELETE, OPTIONS",
+      "Access-Control-Allow-Headers": "Content-Type, Authorization",
+      "Access-Control-Max-Age": "86400",
+      Vary: "Origin",
+    };
+  }
+
+  private async handleHttpRequest(request: Request, url: URL): Promise<Response> {
     // ── HTTP document endpoints ──
     // Document binaries travel over HTTP (they can be megabytes — far above
     // the 1 MiB WebSocket message limit). Only lightweight Document records
@@ -288,13 +314,13 @@ export class Workspace extends DurableObject<Env> {
       }
       // Document endpoints require a signed-in session.
       if (url.pathname === "/documents/upload" && request.method === "POST") {
-        const user = await this.getUserFromRequest();
+        const user = await this.getUserFromRequest(request);
         if (!user) return Response.json({ ok: false, error: "authentication required" }, { status: 401 });
         return this.handleDocumentUpload(request);
       }
       const docMatch = url.pathname.match(/^\/documents\/([^/]+)$/);
       if (request.method === "GET" && docMatch) {
-        const user = await this.getUserFromRequest();
+        const user = await this.getUserFromRequest(request);
         if (!user) return new Response("authentication required", { status: 401 });
         return this.serveDocument(docMatch[1], url.searchParams.get("download") === "1");
       }
@@ -304,9 +330,12 @@ export class Workspace extends DurableObject<Env> {
       }
       return new Response("expected websocket", { status: 426 });
     }
+  }
+
+  private async handleWebSocket(request: Request): Promise<Response> {
     // ── WebSocket upgrades require a signed-in session ──
     // No valid token → the data snapshot is never sent to this client.
-    const wsUser = await this.getUserFromRequest();
+    const wsUser = await this.getUserFromRequest(request);
     if (!wsUser) {
       return new Response("authentication required", { status: 401 });
     }

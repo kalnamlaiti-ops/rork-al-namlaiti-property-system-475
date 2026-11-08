@@ -23,6 +23,7 @@ import type {
   MaintenanceRequest,
   Owner,
   Payment,
+  PdfReport,
   Tenant,
   Unit,
   Vendor,
@@ -93,6 +94,7 @@ export interface DataStore {
   whatsappLogs: WhatsAppLog[];
   whatsappSettings: WhatsAppSettings[];
   leaseTemplateFields: LeaseTemplateField[];
+  pdfReports: PdfReport[];
   history: HistoryEntry[];
 }
 
@@ -120,6 +122,7 @@ const EMPTY_STORE: DataStore = {
   whatsappLogs: [],
   whatsappSettings: [],
   leaseTemplateFields: [],
+  pdfReports: [],
   history: [],
 };
 

@@ -23,6 +23,7 @@ import {
   Box,
   FolderOpen,
   BarChart3,
+  Archive,
   History,
   Shield,
   Ruler,
@@ -71,7 +72,10 @@ const sidebarNav = [
   },
   {
     section: "REPORTS",
-    items: [{ name: "Reports", href: "/reports", icon: BarChart3 }],
+    items: [
+      { name: "Reports", href: "/reports", icon: BarChart3 },
+      { name: "PDF Reports & Archive", href: "/pdf-archive", icon: Archive },
+    ],
   },
   {
     section: "ADMIN",

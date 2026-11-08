@@ -44,6 +44,7 @@ const PAGE_RULES: Record<string, PageRule> = {
   "journal-entries": { view: ALL, edit: FINANCE },
   distributions: { view: ALL, edit: FINANCE },
   reports: { view: ["Owner", "Admin", "Accountant"], edit: ["Owner", "Admin", "Accountant"] },
+  "pdf-archive": { view: FINANCE, edit: FINANCE },
   users: { view: OWNER_ONLY, edit: OWNER_ONLY },
   whatsapp: { view: OWNER_ONLY, edit: OWNER_ONLY },
   "lease-template-calibration": { view: OWNER_ONLY, edit: OWNER_ONLY },
@@ -91,6 +92,7 @@ export function pageIdFromCollection(collection: string): string {
     whatsappLogs: "whatsapp",
     whatsappSettings: "whatsapp",
     leaseTemplateFields: "lease-template-calibration",
+    pdfReports: "pdf-archive",
   };
   return map[collection] ?? collection;
 }

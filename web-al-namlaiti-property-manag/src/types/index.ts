@@ -286,6 +286,36 @@ export interface Expense {
   description?: string;
   /** ID of the invoice that billed this expense (set after invoicing). */
   invoiceId?: string;
+  /** How the expense was paid (optional; older records may not have it). */
+  paymentMethod?: PaymentMethod;
+}
+
+export type PdfReportType = "ewa" | "expense" | "monthly-financial" | "other";
+
+/** Archived, immutable PDF report. Every regeneration is a NEW record (new version). */
+export interface PdfReport {
+  id: string;
+  /** Groups versions: `${type}:${YYYY-MM}:${buildingId|all}`. */
+  reportKey: string;
+  /** Human-readable unique code, e.g. EWA-2026-09-ALL-v1. */
+  reportCode: string;
+  reportType: PdfReportType;
+  name: string;
+  /** Billing month the report covers (YYYY-MM) — never the generation date. */
+  month: string;
+  year: number;
+  /** Set when the report was scoped to a single building. */
+  buildingId?: string;
+  /** Buildings that appear in the report. */
+  buildingIds: string[];
+  version: number;
+  previousVersionId?: string;
+  generatedAt: string;
+  generatedBy: string;
+  fileSize: number;
+  fileName: string;
+  fileUrl?: string;
+  totals: { total: number; allocated?: number; count: number };
 }
 
 export interface ChartOfAccount {

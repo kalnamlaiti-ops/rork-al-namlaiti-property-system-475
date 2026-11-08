@@ -103,6 +103,8 @@ export interface DataStore {
   whatsappLogs: unknown[];
   whatsappSettings: unknown[];
   leaseTemplateFields: unknown[];
+  /** PDF Reports & Archive — metadata only; the PDF bytes live in document_blobs. */
+  pdfReports: unknown[];
   history: unknown[];
 }
 
@@ -130,6 +132,7 @@ const COLLECTION_KEYS: (keyof DataStore)[] = [
   "whatsappLogs",
   "whatsappSettings",
   "leaseTemplateFields",
+  "pdfReports",
   "history",
 ];
 
@@ -157,6 +160,7 @@ const EMPTY_STORE: DataStore = {
   whatsappLogs: [],
   whatsappSettings: [],
   leaseTemplateFields: [],
+  pdfReports: [],
   history: [],
 };
 
@@ -322,7 +326,11 @@ export class Workspace extends DurableObject<Env> {
       if (request.method === "GET" && docMatch) {
         const user = await this.getUserFromRequest(request);
         if (!user) return new Response("authentication required", { status: 401 });
-        return this.serveDocument(docMatch[1], url.searchParams.get("download") === "1");
+        return this.serveDocument(
+          docMatch[1],
+          url.searchParams.get("download") === "1",
+          url.searchParams.get("name"),
+        );
       }
       // ── HTTP endpoint for WhatsApp webhook status updates (open — Meta calls it) ──
       if (request.method === "POST") {
@@ -734,12 +742,20 @@ export class Workspace extends DurableObject<Env> {
    * small record to all connected clients over WebSocket.
    */
   private async handleDocumentUpload(request: Request): Promise<Response> {
-    let body: { mutationId?: string; record?: { id?: string; [k: string]: unknown }; dataUri?: string };
+    type UploadBody = {
+      mutationId?: string;
+      record?: { id?: string; [k: string]: unknown };
+      dataUri?: string;
+      /** "documents" (default) or "pdfReports" (PDF archive). */
+      collection?: string;
+    };
+    let body: UploadBody;
     try {
-      body = (await request.json()) as { mutationId?: string; record?: { id?: string; [k: string]: unknown }; dataUri?: string };
+      body = (await request.json()) as UploadBody;
     } catch {
       return Response.json({ ok: false, error: "invalid json" }, { status: 400 });
     }
+    const collection: "documents" | "pdfReports" = body.collection === "pdfReports" ? "pdfReports" : "documents";
     const mutationId = body.mutationId ?? crypto.randomUUID();
     const record = body.record;
     const dataUri = body.dataUri;
@@ -754,6 +770,16 @@ export class Workspace extends DurableObject<Env> {
       if (this.isMutationProcessed(mutationId)) {
         return Response.json({ ok: true, mutationId });
       }
+      // Archive PDFs are immutable: every version gets a fresh id, so an
+      // existing archive record is never silently overwritten.
+      if (collection === "pdfReports") {
+        const exists = (this.store as DataStore).pdfReports.some(
+          (r) => (r as { id?: string }).id === docId,
+        );
+        if (exists) {
+          return Response.json({ ok: false, error: "report version already exists" }, { status: 409 });
+        }
+      }
       // 1. Blob goes to its own table.
       this.ctx.storage.sql.exec(
         "INSERT INTO document_blobs (id, value, ts) VALUES (?, ?, ?) ON CONFLICT(id) DO UPDATE SET value = excluded.value, ts = excluded.ts",
@@ -764,7 +790,7 @@ export class Workspace extends DurableObject<Env> {
       // 2. Lightweight record into the shared store (fileUrl is relative;
       // the client resolves it against the backend origin).
       const store = this.store as DataStore;
-      const documents = store.documents as Array<Record<string, unknown>>;
+      const documents = store[collection] as Array<Record<string, unknown>>;
       const cleanRecord: Record<string, unknown> = { ...record, fileUrl: `/documents/${docId}` };
       const idx = documents.findIndex((d) => d.id === docId);
       if (idx >= 0) documents[idx] = cleanRecord;
@@ -775,7 +801,7 @@ export class Workspace extends DurableObject<Env> {
       // 4. Broadcast the small record to every connected client.
       this.broadcast({
         type: "patch",
-        op: { kind: "add", collection: "documents", entity: cleanRecord },
+        op: { kind: "add", collection, entity: cleanRecord },
         actor: "document-upload",
       });
       return Response.json({ ok: true, mutationId });
@@ -792,7 +818,7 @@ export class Workspace extends DurableObject<Env> {
   }
 
   /** Serve a stored document blob as a binary response (inline or download). */
-  private serveDocument(docId: string, download: boolean): Response {
+  private serveDocument(docId: string, download: boolean, fileName?: string | null): Response {
     try {
       const rows = this.ctx.storage.sql
         .exec<{ value: string }>("SELECT value FROM document_blobs WHERE id = ?", docId)
@@ -807,7 +833,8 @@ export class Workspace extends DurableObject<Env> {
       const bytes = new Uint8Array(payload.length);
       for (let i = 0; i < payload.length; i++) bytes[i] = payload.charCodeAt(i);
       const headers: Record<string, string> = { "Content-Type": mime };
-      if (download) headers["Content-Disposition"] = `attachment; filename="document-${docId}"`;
+      const safeName = (fileName ?? "").replace(/[^A-Za-z0-9._ -]/g, "").slice(0, 120) || `document-${docId}`;
+      headers["Content-Disposition"] = `${download ? "attachment" : "inline"}; filename="${safeName}"`;
       return new Response(bytes, { headers });
     } catch (err) {
       console.error("[do] serve document failed", err);

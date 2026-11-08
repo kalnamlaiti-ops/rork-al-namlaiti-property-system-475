@@ -4,7 +4,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { useData, generateCode } from "@/context/DataContext";
-import type { Expense } from "@/types";
+import type { Expense, PaymentMethod } from "@/types";
 
 interface ExpenseFormProps {
   initialData?: Expense;
@@ -12,6 +12,7 @@ interface ExpenseFormProps {
 }
 
 const expenseStatuses: Expense["status"][] = ["Pending", "Approved", "Paid", "Rejected"];
+const paymentMethods: PaymentMethod[] = ["Bank Transfer", "Cash", "Cheque", "Card", "Online"];
 const expenseCategories = ["Maintenance", "Cleaning", "Utilities", "Security", "Insurance", "Repair", "Marketing", "Management", "Other"];
 
 export default function ExpenseForm({ initialData, onClose }: ExpenseFormProps) {
@@ -28,6 +29,7 @@ export default function ExpenseForm({ initialData, onClose }: ExpenseFormProps) 
     expenseDate: initialData?.expenseDate ?? new Date().toISOString().split("T")[0],
     status: initialData?.status ?? "Pending",
     description: initialData?.description ?? "",
+    paymentMethod: (initialData?.paymentMethod ?? "") as PaymentMethod | "",
   });
 
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -68,6 +70,7 @@ export default function ExpenseForm({ initialData, onClose }: ExpenseFormProps) 
       expenseDate: form.expenseDate,
       status: form.status as Expense["status"],
       description: form.description,
+      paymentMethod: form.paymentMethod || undefined,
       billable: true,
     };
 
@@ -161,6 +164,22 @@ export default function ExpenseForm({ initialData, onClose }: ExpenseFormProps) 
               {filteredUnits.map((u) => (
                 <option key={u.id} value={u.id}>
                   {u.unitNumber}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="paymentMethod">Payment Method</Label>
+            <select
+              id="paymentMethod"
+              value={form.paymentMethod}
+              onChange={(e) => update("paymentMethod", e.target.value)}
+              className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+            >
+              <option value="">Not recorded</option>
+              {paymentMethods.map((m) => (
+                <option key={m} value={m}>
+                  {m}
                 </option>
               ))}
             </select>

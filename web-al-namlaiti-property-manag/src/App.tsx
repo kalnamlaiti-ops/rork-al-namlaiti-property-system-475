@@ -43,6 +43,7 @@ import Vendors from "./pages/Vendors";
 import Assets from "./pages/Assets";
 import Documents from "./pages/Documents";
 import Reports from "./pages/Reports";
+import PdfArchive from "./pages/PdfArchive";
 import TenantListReport from "./pages/reports/TenantListReport";
 import LeaseListReport from "./pages/reports/LeaseListReport";
 import PortfolioReport from "./pages/reports/PortfolioReport";
@@ -109,6 +110,7 @@ function AuthGate() {
                 <Route path="assets" element={<Assets />} />
                 <Route path="documents" element={<Documents />} />
                 <Route path="reports" element={<Reports />} />
+                <Route path="pdf-archive" element={<PdfArchive />} />
                 <Route path="reports/tenants" element={<TenantListReport />} />
                 <Route path="reports/leases" element={<LeaseListReport />} />
                 <Route path="reports/portfolio" element={<PortfolioReport />} />
